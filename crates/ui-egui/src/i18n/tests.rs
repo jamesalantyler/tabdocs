@@ -25,11 +25,6 @@ fn system_locales_map_to_languages() {
     assert_eq!(lang_from_tag("fr-FR"), None);
     assert_eq!(lang_from_tag(""), None);
     assert_eq!(lang_from_tag("_"), None);
-    assert_eq!(lang_from_tag("sr"), Some(lang("sr")), "Cyrillic is the default script");
-    assert_eq!(lang_from_tag("sr-RS"), Some(lang("sr")));
-    assert_eq!(lang_from_tag("sr-Cyrl-RS"), Some(lang("sr")));
-    assert_eq!(lang_from_tag("sr-Latn-RS"), Some(lang("sr-latn")));
-    assert_eq!(lang_from_tag("sr-Latn"), Some(lang("sr-latn")));
 }
 
 #[test]
@@ -119,7 +114,7 @@ fn bundled_catalogs_are_well_formed() {
 /// every language, so menus, tooltips and command search never fall back to English.
 #[test]
 fn every_tab_and_command_is_translated() {
-    let session = wordcraft_engine::Session::new(wordcraft_doc::Document::new());
+    let session = tabdocs_engine::Session::new(tabdocs_doc::Document::new());
     // Labels that read the same in every language.
     let universal = |s: &str| !s.chars().any(char::is_alphabetic);
     let mut missing = Vec::new();
@@ -139,7 +134,7 @@ fn every_tab_and_command_is_translated() {
 
 #[test]
 fn the_language_setting_is_a_ui_command_and_persists() {
-    let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Default::default());
+    let mut app = crate::WordApp::new(tabdocs_engine::Session::new(tabdocs_doc::Document::new()), Default::default());
     assert_eq!(app.ui.language, AUTO);
     let r = app.run("ui.language", serde_json::json!({"value": "ZH-HANT"})).unwrap();
     assert_eq!(app.ui.language, "zh-hant");
@@ -166,7 +161,7 @@ fn ukrainian_locales_and_saved_preference_work_without_changing_the_document() {
         assert_eq!(lang_from_tag(tag), Some(uk), "{tag}");
     }
     assert_eq!(first_supported(["fr-FR", "uk-UA", "en-US"]), Some(uk));
-    let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_engine::sample::sample_document()), Default::default());
+    let mut app = crate::WordApp::new(tabdocs_engine::Session::new(tabdocs_engine::sample::sample_document()), Default::default());
     let before = serde_json::to_value(&app.session.doc).unwrap();
     let result = app.run("ui.language", serde_json::json!({"value": "UK"})).unwrap();
     assert_eq!(result["effective"], "uk");
@@ -200,7 +195,7 @@ fn ukrainian_covers_the_entire_existing_interface_catalog() {
 
 #[test]
 fn bundled_interface_fonts_cover_ukrainian_without_system_fallbacks() {
-    let db = wordcraft_fonts::FontDb::with_font_dirs(Vec::new());
+    let db = tabdocs_fonts::FontDb::with_font_dirs(Vec::new());
     let (entries, errors) = parse_entries(lang("uk").0.source);
     assert!(errors.is_empty());
     let chars: std::collections::HashSet<char> =
@@ -215,69 +210,6 @@ fn bundled_interface_fonts_cover_ukrainian_without_system_fallbacks() {
 }
 
 #[test]
-fn serbian_covers_the_entire_existing_interface_catalog() {
-    use std::collections::HashSet;
-    let keys = |source| parse_entries(source).0.into_iter().map(|e| e.source).collect::<HashSet<_>>();
-    let reference = keys(lang("zh-hans").0.source);
-    assert_eq!(keys(lang("sr").0.source), reference);
-    assert_eq!(keys(lang("sr-latn").0.source), reference);
-    let (cyr, lat) = (lang("sr"), lang("sr-latn"));
-    assert_eq!(tr(cyr, "Home"), "Почетак");
-    assert_eq!(tr(lat, "Home"), "Početak");
-    assert_eq!(tr(cyr, "unknown future label"), "unknown future label");
-    assert_eq!(fmt(tr(lat, "Exported {path}"), &[("path", "draft-1.docx")]), "Izvezeno: draft-1.docx");
-}
-
-#[test]
-fn bundled_interface_fonts_cover_serbian_cyrillic_without_system_fallbacks() {
-    let db = wordcraft_fonts::FontDb::with_font_dirs(Vec::new());
-    let (entries, errors) = parse_entries(lang("sr").0.source);
-    assert!(errors.is_empty());
-    let chars: std::collections::HashSet<char> =
-        entries.iter().flat_map(|e| e.translation.chars()).filter(|c| ('\u{0400}'..='\u{04ff}').contains(c)).collect();
-    for (family, style) in [("Inter", "Regular"), ("Inter", "Medium"), ("Inter", "SemiBold"), ("JetBrains Mono", "Regular")] {
-        let face = db.face(family, style);
-        assert_eq!(face.family, family, "must use the bundled interface face");
-        for ch in &chars {
-            assert_ne!(face.glyph_for(*ch), 0, "{family} {style} lacks {ch}");
-        }
-    }
-}
-
-#[test]
-fn bundled_interface_fonts_cover_serbian_latin_without_system_fallbacks() {
-    let db = wordcraft_fonts::FontDb::with_font_dirs(Vec::new());
-    let (entries, errors) = parse_entries(lang("sr-latn").0.source);
-    assert!(errors.is_empty());
-    // Serbian Latin's letters beyond plain ASCII: š č ć ž đ (and their capitals).
-    let extra = ['š', 'č', 'ć', 'ž', 'đ', 'Š', 'Č', 'Ć', 'Ž', 'Đ'];
-    let chars: std::collections::HashSet<char> =
-        entries.iter().flat_map(|e| e.translation.chars()).filter(|c| extra.contains(c)).chain(extra).collect();
-    for (family, style) in [("Inter", "Regular"), ("Inter", "Medium"), ("Inter", "SemiBold"), ("JetBrains Mono", "Regular")] {
-        let face = db.face(family, style);
-        assert_eq!(face.family, family, "must use the bundled interface face");
-        for ch in &chars {
-            assert_ne!(face.glyph_for(*ch), 0, "{family} {style} lacks {ch}");
-        }
-    }
-}
-
-#[test]
-fn serbian_locales_resolve_by_script() {
-    let cyr = lang("sr");
-    let lat = lang("sr-latn");
-    for tag in ["sr", "sr-RS", "sr_RS.UTF-8", "SR", "sr-Cyrl", "sr-Cyrl-RS"] {
-        assert_eq!(lang_from_tag(tag), Some(cyr), "{tag}");
-    }
-    for tag in ["sr-Latn", "sr-Latn-RS", "sr-latn-me"] {
-        assert_eq!(lang_from_tag(tag), Some(lat), "{tag}");
-    }
-    assert_eq!(first_supported(["fr-FR", "sr-Latn-RS", "en-US"]), Some(lat));
-    assert_eq!(tr(cyr, "File"), "Фајл");
-    assert_eq!(tr(lat, "File"), "Fajl");
-}
-
-#[test]
 fn brazilian_portuguese_locales_and_saved_preference_work_without_changing_the_document() {
     let pt = lang("pt-br");
     for tag in ["pt-BR", "pt_BR.UTF-8", "PT-BR", "pt-BR-latn", "pt_BR.UTF-8@euro"] {
@@ -287,7 +219,7 @@ fn brazilian_portuguese_locales_and_saved_preference_work_without_changing_the_d
     assert_eq!(lang_from_tag("pt-PT"), None);
     assert_eq!(lang_from_tag("pt"), None);
     assert_eq!(first_supported(["fr-FR", "pt-BR", "en-US"]), Some(pt));
-    let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Default::default());
+    let mut app = crate::WordApp::new(tabdocs_engine::Session::new(tabdocs_doc::Document::new()), Default::default());
     let before = serde_json::to_value(&app.session.doc).unwrap();
     let result = app.run("ui.language", serde_json::json!({"value": "PT-BR"})).unwrap();
     assert_eq!(result["effective"], "pt-br");
@@ -321,7 +253,7 @@ fn brazilian_portuguese_covers_the_entire_existing_interface_catalog() {
 
 #[test]
 fn bundled_interface_fonts_cover_brazilian_portuguese_without_system_fallbacks() {
-    let db = wordcraft_fonts::FontDb::with_font_dirs(Vec::new());
+    let db = tabdocs_fonts::FontDb::with_font_dirs(Vec::new());
     let (entries, errors) = parse_entries(lang("pt-br").0.source);
     assert!(errors.is_empty());
     let chars: std::collections::HashSet<char> = entries
@@ -339,25 +271,4 @@ fn bundled_interface_fonts_cover_brazilian_portuguese_without_system_fallbacks()
             assert_ne!(face.glyph_for(*ch), 0, "{family} {style} lacks {ch}");
         }
     }
-}
-
-#[test]
-fn chinese_interface_fonts_load_and_cover_simplified_hanzi() {
-    // #241: without an embedded Chinese face the interface adds an installed CJK font; egui must
-    // accept it (it panics on font data it can't parse) and draw simplified-only hanzi with it.
-    let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::font_definitions(true, true));
-    ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
-    let covered = ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), "删除页选"));
-    let embedded = !wordcraft_fonts::ui_needs_system_cjk(true, &wordcraft_fonts::ui_cjk_fonts(true));
-    if embedded || wordcraft_fonts::system_cjk_ui_font(true).is_some() {
-        assert!(covered, "a Chinese face is available but the interface lacks simplified hanzi");
-    }
-}
-
-#[test]
-fn only_cjk_languages_ask_for_an_installed_cjk_font() {
-    // #241 follow-up: an English interface must not read a large system CJK font on startup.
-    let cjk: Vec<&str> = Lang::all().filter(|l| l.uses_cjk()).map(Lang::code).collect();
-    assert_eq!(cjk, ["zh-hans", "zh-hant", "ja"]);
 }

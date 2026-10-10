@@ -4862,44 +4862,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "wordcraft"
+name = "tabdocs"
 version = "0.4.0"
 dependencies = [
- "arboard",
  "eframe",
  "egui",
  "fmv-macos-events",
  "getrandom 0.3.4",
  "log",
- "open",
- "pollster 0.4.0",
  "rfd",
  "serde_json",
  "winresource",
- "wordcraft-control-key",
- "wordcraft-doc",
- "wordcraft-engine",
- "wordcraft-ui-egui",
+ "tabdocs-control-key",
+ "tabdocs-doc",
+ "tabdocs-engine",
+ "tabdocs-ui-egui",
 ]
 
 [[package]]
-name = "wordcraft-cli"
+name = "tabdocs-cli"
 version = "0.4.0"
 dependencies = [
  "serde_json",
- "wordcraft-doc",
- "wordcraft-engine",
- "wordcraft-mcp",
- "wordcraft-render",
- "wordcraft-zotero",
+ "tabdocs-doc",
+ "tabdocs-engine",
+ "tabdocs-mcp",
+ "tabdocs-render",
+ "tabdocs-zotero",
 ]
 
 [[package]]
-name = "wordcraft-control-key"
+name = "tabdocs-control-key"
 version = "0.4.0"
 
 [[package]]
-name = "wordcraft-doc"
+name = "tabdocs-doc"
 version = "0.4.0"
 dependencies = [
  "proptest",
@@ -4907,11 +4904,11 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "unicode-segmentation",
- "wordcraft-geom",
+ "tabdocs-geom",
 ]
 
 [[package]]
-name = "wordcraft-docbin"
+name = "tabdocs-docbin"
 version = "0.4.0"
 dependencies = [
  "cfb",
@@ -4919,12 +4916,12 @@ dependencies = [
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
- "wordcraft-doc",
- "wordcraft-geom",
+ "tabdocs-doc",
+ "tabdocs-geom",
 ]
 
 [[package]]
-name = "wordcraft-docx"
+name = "tabdocs-docx"
 version = "0.4.0"
 dependencies = [
  "image",
@@ -4932,13 +4929,13 @@ dependencies = [
  "proptest",
  "quick-xml 0.38.4",
  "thiserror 2.0.21",
- "wordcraft-doc",
- "wordcraft-geom",
+ "tabdocs-doc",
+ "tabdocs-geom",
  "zip",
 ]
 
 [[package]]
-name = "wordcraft-engine"
+name = "tabdocs-engine"
 version = "0.4.0"
 dependencies = [
  "image",
@@ -4949,21 +4946,21 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "wordcraft-doc",
- "wordcraft-docbin",
- "wordcraft-docx",
- "wordcraft-fonts",
- "wordcraft-formats",
- "wordcraft-geom",
- "wordcraft-layout",
- "wordcraft-pdf",
- "wordcraft-proof",
- "wordcraft-render",
+ "tabdocs-doc",
+ "tabdocs-docbin",
+ "tabdocs-docx",
+ "tabdocs-fonts",
+ "tabdocs-formats",
+ "tabdocs-geom",
+ "tabdocs-layout",
+ "tabdocs-pdf",
+ "tabdocs-proof",
+ "tabdocs-render",
  "zip",
 ]
 
 [[package]]
-name = "wordcraft-fonts"
+name = "tabdocs-fonts"
 version = "0.4.0"
 dependencies = [
  "harfrust 0.13.3",
@@ -4974,27 +4971,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "wordcraft-formats"
+name = "tabdocs-formats"
 version = "0.4.0"
 dependencies = [
  "image",
  "log",
  "proptest",
  "quick-xml 0.38.4",
- "wordcraft-doc",
- "wordcraft-geom",
+ "tabdocs-doc",
+ "tabdocs-geom",
  "zip",
 ]
 
 [[package]]
-name = "wordcraft-geom"
+name = "tabdocs-geom"
 version = "0.4.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
-name = "wordcraft-layout"
+name = "tabdocs-layout"
 version = "0.4.0"
 dependencies = [
  "js-sys",
@@ -5004,34 +5001,26 @@ dependencies = [
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
- "wordcraft-doc",
- "wordcraft-fonts",
- "wordcraft-geom",
- "wordcraft-proof",
+ "tabdocs-doc",
+ "tabdocs-fonts",
+ "tabdocs-geom",
+ "tabdocs-proof",
 ]
 
 [[package]]
-name = "wordcraft-mcp"
+name = "tabdocs-mcp"
 version = "0.4.0"
 dependencies = [
  "log",
  "serde_json",
- "wordcraft-control-key",
- "wordcraft-doc",
- "wordcraft-engine",
- "wordcraft-render",
+ "tabdocs-control-key",
+ "tabdocs-doc",
+ "tabdocs-engine",
+ "tabdocs-render",
 ]
 
 [[package]]
-name = "wordcraft-metafile"
-version = "0.4.0"
-dependencies = [
- "kurbo",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "wordcraft-pdf"
+name = "tabdocs-pdf"
 version = "0.4.0"
 dependencies = [
  "hayro-cmap",
@@ -5043,15 +5032,14 @@ dependencies = [
  "kurbo",
  "log",
  "thiserror 2.0.21",
- "wordcraft-doc",
- "wordcraft-fonts",
- "wordcraft-geom",
- "wordcraft-layout",
- "wordcraft-metafile",
+ "tabdocs-doc",
+ "tabdocs-fonts",
+ "tabdocs-geom",
+ "tabdocs-layout",
 ]
 
 [[package]]
-name = "wordcraft-proof"
+name = "tabdocs-proof"
 version = "0.4.0"
 dependencies = [
  "log",
@@ -5060,21 +5048,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "wordcraft-render"
+name = "tabdocs-render"
 version = "0.4.0"
 dependencies = [
  "image",
  "log",
  "vello_cpu 0.2.0",
- "wordcraft-doc",
- "wordcraft-fonts",
- "wordcraft-geom",
- "wordcraft-layout",
- "wordcraft-metafile",
+ "tabdocs-doc",
+ "tabdocs-fonts",
+ "tabdocs-geom",
+ "tabdocs-layout",
 ]
 
 [[package]]
-name = "wordcraft-ui-egui"
+name = "tabdocs-ui-egui"
 version = "0.4.0"
 dependencies = [
  "egui",
@@ -5086,17 +5073,17 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "toml",
- "wordcraft-doc",
- "wordcraft-engine",
- "wordcraft-fonts",
- "wordcraft-geom",
- "wordcraft-layout",
- "wordcraft-render",
- "wordcraft-zotero",
+ "tabdocs-doc",
+ "tabdocs-engine",
+ "tabdocs-fonts",
+ "tabdocs-geom",
+ "tabdocs-layout",
+ "tabdocs-render",
+ "tabdocs-zotero",
 ]
 
 [[package]]
-name = "wordcraft-web"
+name = "tabdocs-web"
 version = "0.4.0"
 dependencies = [
  "eframe",
@@ -5108,23 +5095,23 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "wordcraft-doc",
- "wordcraft-engine",
- "wordcraft-ui-egui",
+ "tabdocs-doc",
+ "tabdocs-engine",
+ "tabdocs-ui-egui",
 ]
 
 [[package]]
-name = "wordcraft-zotero"
+name = "tabdocs-zotero"
 version = "0.4.0"
 dependencies = [
  "log",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
- "wordcraft-doc",
- "wordcraft-docx",
- "wordcraft-engine",
- "wordcraft-formats",
+ "tabdocs-doc",
+ "tabdocs-docx",
+ "tabdocs-engine",
+ "tabdocs-formats",
 ]
 
 [[package]]

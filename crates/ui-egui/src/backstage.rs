@@ -85,18 +85,14 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 }
             }
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                for (label, id) in [("About", "about"), ("Discord community", "discord")] {
+                for (label, id) in [("About", "about")] {
                     let (r, resp) = ui.allocate_exact_size(vec2(200.0, 32.0), Sense::click());
                     if resp.hovered() {
                         ui.painter().rect_filled(r, 0.0, egui::Color32::from_white_alpha(26));
                     }
                     ui.painter().text(pos2(r.min.x + 22.0, r.center().y), Align2::LEFT_CENTER, tl!(label), regular(13.0), egui::Color32::WHITE);
                     if resp.clicked() {
-                        if id == "discord" {
-                            let _ = app.run("ui.discord", json!({}));
-                        } else {
-                            app.dialog = crate::dialogs::Dialog::open("about", app);
-                        }
+                        app.dialog = crate::dialogs::Dialog::open("about", app);
                     }
                 }
             });
@@ -135,11 +131,11 @@ fn template_tile(ui: &mut Ui, app: &mut WordApp, label: &str, template: &str) {
         let ppp = ui.ctx().pixels_per_point();
         let key = format!("tpl:{template}:{ppp}");
         let tex = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new(&key))).or_else(|| {
-            let mut s = wordcraft_engine::Session::new(wordcraft_doc::Document::new());
+            let mut s = tabdocs_engine::Session::new(tabdocs_doc::Document::new());
             let _ = s.run("file.new", &json!({"template": template}));
             let l = s.export_layout();
             let page = l.pages.first()?;
-            let img = wordcraft_render::render_page(&s.doc, page, 150.0 / page.w * ppp, &crate::canvas::screen_render_options());
+            let img = tabdocs_render::render_page(&s.doc, page, 150.0 / page.w * ppp, &crate::canvas::screen_render_options());
             let px = img.to_straight();
             let h = ui.ctx().load_texture(
                 &key,
@@ -181,7 +177,7 @@ fn matching_templates(query: &str) -> Vec<(&'static str, &'static str)> {
 /// Home: a greeting, Blank plus a short row of templates with a link to New, then Recent.
 fn home_page(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    let hour = wordcraft_engine::cmd::now_iso().get(11..13).and_then(|h| h.parse::<u32>().ok()).unwrap_or(9);
+    let hour = tabdocs_engine::cmd::now_iso().get(11..13).and_then(|h| h.parse::<u32>().ok()).unwrap_or(9);
     heading(
         ui,
         if hour < 12 {
@@ -257,7 +253,7 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
 
 fn open_page(app: &mut WordApp, ui: &mut Ui) {
     heading(ui, "Open");
-    if ui.button(egui::RichText::new(tl!("Browse…")).font(medium(14.0))).clicked() {
+    if ui.button(egui::RichText::new(tl!("📂  Browse…")).font(medium(14.0))).clicked() {
         let _ = app.run("ui.openFileDialog", json!({}));
     }
     ui.add_space(18.0);
@@ -270,35 +266,17 @@ fn info_page(app: &mut WordApp, ui: &mut Ui) {
     ui.columns(2, |cols| {
         let ui = &mut cols[0];
         ui.label(egui::RichText::new(tl!("Properties")).font(semibold(15.0)));
-        // The fields edit a copy of the document's properties that is read afresh every frame,
-        // so each change goes into the document as it is typed (#260): waiting for the field to
-        // lose focus dropped the keystrokes, and leaving File with Escape never loses it at all.
-        // The keystrokes of one visit to a field are a single undo step.
         let mut props = app.session.doc.core.clone();
-        let mut edited = None;
-        let mut focused = None;
+        let mut changed = false;
         egui::Grid::new("props").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             for (l, v) in [("Title", &mut props.title), ("Subject", &mut props.subject), ("Author", &mut props.creator), ("Keywords", &mut props.keywords), ("Category", &mut props.category)] {
-                let label = ui.label(tl!(l));
-                let r = ui.add(egui::TextEdit::singleline(v).id_salt(("info-prop", l))).labelled_by(label.id);
-                if r.changed() {
-                    edited = Some(l);
-                }
-                if r.has_focus() {
-                    focused = Some(l);
-                }
+                ui.label(tl!(l));
+                changed |= ui.text_edit_singleline(v).lost_focus();
                 ui.end_row();
             }
         });
-        if let Some(field) = edited {
-            if app.info_editing == Some((field, app.session.rev())) {
-                app.session.join_next_undo();
-            }
-            let ok = app.run("file.properties", json!({"title": props.title, "subject": props.subject, "author": props.creator, "keywords": props.keywords, "category": props.category})).is_ok();
-            app.info_editing = ok.then(|| (field, app.session.rev()));
-        }
-        if focused != app.info_editing.map(|(f, _)| f) {
-            app.info_editing = None;
+        if changed {
+            let _ = app.run("file.properties", json!({"title": props.title, "subject": props.subject, "author": props.creator, "keywords": props.keywords, "category": props.category}));
         }
         let ui = &mut cols[1];
         ui.label(egui::RichText::new(tl!("Statistics")).font(semibold(15.0)));
@@ -339,7 +317,14 @@ fn export_page(app: &mut WordApp, ui: &mut Ui) {
         ("Page image (*.png)", "png"),
     ] {
         if ui.add(egui::Button::new(egui::RichText::new(tl!(label)).font(medium(13.5))).min_size(vec2(320.0, 34.0))).clicked() {
-            app.export_dialog(ext);
+            let name = format!("{}.{ext}", app.title_stem());
+            let picked = app.services.pick_save.as_ref().and_then(|f| f(&name));
+            if let Some(path) = picked {
+                let r = if ext == "png" { app.run("file.exportPng", json!({"path": path})) } else { app.run("file.saveAs", json!({"path": path})) };
+                if r.is_ok() {
+                    app.status(crate::i18n::fmt(tl!("Exported {path}"), &[("path", &path)]));
+                }
+            }
         }
         ui.add_space(4.0);
     }
@@ -357,16 +342,7 @@ fn options_page(app: &mut WordApp, ui: &mut Ui) {
         }
     });
     theme_picker(app, ui);
-    // The browser can't write to the user's files, so AutoSave can't be turned on there (#176).
-    let browser = app.autosave_block() == Some(crate::AutoSaveBlock::Browser);
-    let mut autosave = app.autosave && !browser;
-    let r = ui.add_enabled(!browser, egui::Checkbox::new(&mut autosave, tl!("AutoSave documents you have saved in WordCraft")));
-    if browser {
-        r.on_disabled_hover_text(crate::AutoSaveBlock::Browser.reason());
-    } else if r.changed() {
-        app.autosave = autosave;
-        app.session.autosave = autosave;
-    }
+    ui.checkbox(&mut app.autosave, tl!("AutoSave documents you have saved in TabDocs"));
     let mut dark_page = app.session.view.dark_mode;
     if ui
         .checkbox(&mut dark_page, tl!("Dark page (white text on black)"))
@@ -375,7 +351,6 @@ fn options_page(app: &mut WordApp, ui: &mut Ui) {
     {
         let _ = app.run("view.darkMode", json!({"value": dark_page}));
     }
-    ui.checkbox(&mut app.ui.show_discord, tl!("Show the community button in the title bar"));
     ui.add_space(10.0);
     ui.label(egui::RichText::new(tl!("Display")).font(semibold(15.0)));
     let mut marks = app.session.view.marks;
@@ -388,7 +363,7 @@ fn options_page(app: &mut WordApp, ui: &mut Ui) {
     }
     ui.add_space(10.0);
     ui.label(egui::RichText::new(tl!("Agents")).font(semibold(15.0)));
-    ui.label(tl!("Every command is available to scripts and AI agents: run `wordcraft-cli mcp` for an MCP server, or start the app with `--control <port>` for the JSON control channel."));
+    ui.label(tl!("Every command is available to scripts and AI agents: run `tabdocs-cli mcp` for an MCP server, or start the app with `--control <port>` for the JSON control channel."));
 }
 
 /// File ▸ Options ▸ Interface theme: Light, Dark, or follow the system's appearance (#115).
@@ -409,8 +384,6 @@ fn theme_picker(app: &mut WordApp, ui: &mut Ui) {
 /// File ▸ Options ▸ Interface language: follow the system (the default) or pick one (#8).
 fn language_picker(app: &mut WordApp, ui: &mut Ui) {
     use crate::i18n::{AUTO, Lang};
-    // The language names are in their own scripts: fonts for them load from the next frame.
-    app.want_system_cjk = true;
     let system = crate::i18n::system_lang();
     let auto_label = crate::i18n::fmt(tl!("Automatic ({language})"), &[("language", system.name())]);
     let current = if app.ui.language == AUTO { auto_label.clone() } else { Lang::from_pref(&app.ui.language).name().to_string() };
@@ -452,7 +425,7 @@ mod tests {
     /// and Recent; New has every template and no Recent list.
     #[test]
     fn home_and_new_show_different_sections() {
-        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        let mut a = WordApp::new(tabdocs_engine::Session::new(tabdocs_doc::Document::new()), Services::default());
         a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
         let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
             |ui, app: &mut WordApp| {
@@ -471,67 +444,5 @@ mod tests {
         assert_eq!(h.state().ui.backstage_page, "new", "the link opens New");
         assert!(h.query_by_label("Report").is_some(), "New shows every template");
         assert!(h.query_by_label("Recent").is_none(), "New has no Recent list");
-    }
-
-    /// #260: File › Info's Title and Author fields dropped every keystroke (they edited a copy
-    /// re-read each frame and only wrote it back when the field lost focus), so a save had no
-    /// title or author. Typing now lands in the document as it happens, one undo step per field,
-    /// and the browser's Save downloads it with the save stamps advanced (#262).
-    #[test]
-    fn info_fields_keep_typed_properties_through_a_web_save() {
-        use egui::accesskit::Role;
-        let got: std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>> = Default::default();
-        let sink = got.clone();
-        let services = Services {
-            download: Some(Box::new(move |n: &str, b: &[u8]| {
-                sink.borrow_mut().push((n.to_string(), b.to_vec()));
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("XYZ")), services);
-        a.session.author = "GAMMA".into();
-        a.run("ui.backstage", json!({"value": true, "page": "info"})).unwrap();
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
-            |ui, app: &mut WordApp| {
-                let ctx = ui.ctx().clone();
-                app.logic(&ctx);
-                app.ui(ui);
-            },
-            a,
-        );
-        h.run_steps(4);
-        for (field, text) in [("Title", "ALPHA"), ("Author", "BETA")] {
-            h.get_by_role_and_label(Role::TextInput, field).click();
-            h.run_steps(2);
-            for c in text.chars() {
-                h.get_by_role_and_label(Role::TextInput, field).type_text(&c.to_string());
-                h.run_steps(2);
-            }
-            assert_eq!(h.get_by_role_and_label(Role::TextInput, field).value().as_deref(), Some(text), "{field} shows what was typed");
-        }
-        let core = h.state().session.doc.core.clone();
-        assert_eq!((core.title.as_str(), core.creator.as_str()), ("ALPHA", "BETA"));
-        assert!(h.state().session.dirty, "the property edits are unsaved changes");
-
-        // Save (web: a download) writes them into docProps/core.xml, with fresh save stamps.
-        let a = h.state_mut();
-        let created = a.session.doc.core.created.clone();
-        a.run("file.save", json!({})).unwrap();
-        a.run("file.save", json!({})).unwrap();
-        let (name, bytes) = got.borrow_mut().pop().unwrap();
-        let back = wordcraft_engine::io::open_bytes(&name, &bytes).unwrap();
-        assert_eq!((back.core.title.as_str(), back.core.creator.as_str()), ("ALPHA", "BETA"));
-        assert_eq!(back.core.last_modified_by, "GAMMA");
-        assert_eq!(back.core.revision, core.revision + 2, "each save advances the revision");
-        assert!(created.is_empty() && !back.core.created.is_empty(), "the first save sets the creation time");
-        assert!(!back.core.modified.is_empty());
-        assert!(!a.session.dirty);
-
-        // Each field's typing is one undo step.
-        a.session.run("edit.undo", &json!({})).unwrap();
-        assert_eq!((a.session.doc.core.title.as_str(), a.session.doc.core.creator.as_str()), ("ALPHA", ""));
-        a.session.run("edit.undo", &json!({})).unwrap();
-        assert_eq!(a.session.doc.core.title, "");
     }
 }

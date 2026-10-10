@@ -2,31 +2,27 @@
 
 pub mod caret;
 pub mod citations;
-pub mod column;
 pub mod design;
 pub mod edit;
 pub mod equation;
 pub mod file;
 pub mod format;
 pub mod insert;
-pub mod inspector;
 pub mod mailings;
 pub mod objects;
 pub mod page;
 pub mod para;
-pub mod paste;
 pub mod references;
 pub mod review;
 pub mod speech;
 pub mod table;
-pub mod table_style;
 pub mod text;
 pub mod tools;
 pub mod view;
 
 use serde_json::{Value, json};
-use wordcraft_doc::props::CharProps;
-use wordcraft_doc::{Pos, Revision, RevisionKind, StoryRef};
+use tabdocs_doc::props::CharProps;
+use tabdocs_doc::{Pos, Revision, RevisionKind, StoryRef};
 
 use crate::{CmdError, CmdResult, Registry, Session};
 
@@ -35,18 +31,14 @@ pub fn registry() -> Registry {
     let mut v = Vec::new();
     v.extend(text::specs());
     v.extend(caret::specs());
-    v.extend(column::specs());
     v.extend(edit::specs());
-    v.extend(paste::specs());
     v.extend(format::specs());
     v.extend(para::specs());
-    v.extend(inspector::specs());
     v.extend(view::specs());
     v.extend(insert::specs());
     v.extend(equation::specs());
     v.extend(page::specs());
     v.extend(table::specs());
-    v.extend(table_style::specs());
     v.extend(review::specs());
     v.extend(file::specs());
     v.extend(design::specs());
@@ -101,15 +93,15 @@ pub fn new_revision(s: &mut Session, kind: RevisionKind) -> u32 {
 
 /// Whether the paragraph at `path` is followed by another paragraph in the same container (so
 /// its paragraph mark can be removed by joining the two).
-pub fn has_next_para(s: &Session, story: StoryRef, path: &wordcraft_doc::Path) -> bool {
-    matches!(s.doc.block(story, &path.with_last(path.last().saturating_add(1))), Some(wordcraft_doc::Block::Para(_)))
+pub fn has_next_para(s: &Session, story: StoryRef, path: &tabdocs_doc::Path) -> bool {
+    matches!(s.doc.block(story, &path.with_last(path.last().saturating_add(1))), Some(tabdocs_doc::Block::Para(_)))
 }
 
 /// Remove the paragraph mark of the paragraph at `path`: the next paragraph in the same container
 /// joins it. The joined paragraph keeps this paragraph's properties and ends with the next one's
 /// mark (and that mark's revisions). Returns `false`, changing nothing, when no paragraph follows
 /// in the container (a story's or cell's last mark can't be removed).
-pub fn join_next_para(s: &mut Session, story: StoryRef, path: &wordcraft_doc::Path) -> Result<bool, CmdError> {
+pub fn join_next_para(s: &mut Session, story: StoryRef, path: &tabdocs_doc::Path) -> Result<bool, CmdError> {
     if !has_next_para(s, story, path) {
         return Ok(false);
     }
@@ -124,7 +116,7 @@ pub fn join_next_para(s: &mut Session, story: StoryRef, path: &wordcraft_doc::Pa
 }
 
 /// Tracked deletion: own insertions are removed, other text is marked deleted.
-pub(crate) fn track_delete(s: &mut Session, a: &Pos, b: &Pos) -> Result<Pos, CmdError> {
+fn track_delete(s: &mut Session, a: &Pos, b: &Pos) -> Result<Pos, CmdError> {
     let rid = new_revision(s, RevisionKind::Delete);
     let author = s.author.clone();
     // Remove text this author inserted (it never existed for the reader); mark the rest.
@@ -201,13 +193,13 @@ pub fn type_text(s: &mut Session, text: &str) -> Result<(), CmdError> {
 
 /// Take a paragraph out of its list like Word does when Enter or Backspace ends a list: a
 /// "List Paragraph" goes back to Normal; any other style keeps itself with numbering switched off.
-pub fn leave_list(para: &mut wordcraft_doc::Paragraph) {
+pub fn leave_list(para: &mut tabdocs_doc::Paragraph) {
     if para.props.style.as_deref() == Some("ListParagraph") {
         para.props.style = None;
         para.props.numbering = None;
     } else {
         // `num: 0` overrides numbering a style may carry.
-        para.props.numbering = Some(wordcraft_doc::props::NumRef { num: 0, level: 0 });
+        para.props.numbering = Some(tabdocs_doc::props::NumRef { num: 0, level: 0 });
     }
     para.props.indent_left = None;
     para.props.indent_first = None;
@@ -227,7 +219,7 @@ pub fn split_para(s: &mut Session, at: &Pos) -> Result<Pos, CmdError> {
         // the list (Word behaviour).
         let para = s.doc.para_mut(at.story, &at.path)?;
         if n.level > 0 {
-            para.props.numbering = Some(wordcraft_doc::props::NumRef { num: n.num, level: n.level - 1 });
+            para.props.numbering = Some(tabdocs_doc::props::NumRef { num: n.num, level: n.level - 1 });
             para.touch();
         } else {
             leave_list(para);

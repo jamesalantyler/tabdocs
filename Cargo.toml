@@ -1,33 +1,32 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
-default-members = ["crates/*", "apps/wordcraft", "apps/wordcraft-cli", "xtask"]
+default-members = ["crates/*", "apps/tabdocs", "apps/tabdocs-cli", "xtask"]
 
 [workspace.package]
 version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
-repository = "https://github.com/storytold/wordcraft"
+
 
 [workspace.dependencies]
 # internal
-wordcraft-geom = { path = "crates/geom" }
-wordcraft-doc = { path = "crates/doc" }
-wordcraft-fonts = { path = "crates/fonts" }
-wordcraft-layout = { path = "crates/layout" }
-wordcraft-docx = { path = "crates/docx" }
-wordcraft-docbin = { path = "crates/docbin" }
-wordcraft-formats = { path = "crates/formats" }
-wordcraft-render = { path = "crates/render" }
-wordcraft-pdf = { path = "crates/pdf" }
-wordcraft-proof = { path = "crates/proof" }
-wordcraft-engine = { path = "crates/engine" }
-wordcraft-mcp = { path = "crates/mcp" }
-wordcraft-zotero = { path = "crates/zotero" }
-wordcraft-control-key = { path = "crates/control-key" }
-wordcraft-ui-egui = { path = "crates/ui-egui" }
-wordcraft-metafile = { path = "crates/metafile" }
+tabdocs-geom = { path = "crates/geom" }
+tabdocs-doc = { path = "crates/doc" }
+tabdocs-fonts = { path = "crates/fonts" }
+tabdocs-layout = { path = "crates/layout" }
+tabdocs-docx = { path = "crates/docx" }
+tabdocs-docbin = { path = "crates/docbin" }
+tabdocs-formats = { path = "crates/formats" }
+tabdocs-render = { path = "crates/render" }
+tabdocs-pdf = { path = "crates/pdf" }
+tabdocs-proof = { path = "crates/proof" }
+tabdocs-engine = { path = "crates/engine" }
+tabdocs-mcp = { path = "crates/mcp" }
+tabdocs-zotero = { path = "crates/zotero" }
+tabdocs-control-key = { path = "crates/control-key" }
+tabdocs-ui-egui = { path = "crates/ui-egui" }
 
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }

@@ -3,13 +3,13 @@
 //! results are what Word produces for the same keys.
 
 use serde_json::json;
-use wordcraft_doc::props::{BorderStyle, VertAlign};
-use wordcraft_doc::{Pos, StoryRef};
+use tabdocs_doc::props::{BorderStyle, VertAlign};
+use tabdocs_doc::{Pos, StoryRef};
 
 use crate::Session;
 
 fn s() -> Session {
-    Session::new(wordcraft_doc::Document::new())
+    Session::new(tabdocs_doc::Document::new())
 }
 
 fn run(s: &mut Session, id: &str, v: serde_json::Value) {
@@ -148,7 +148,7 @@ fn list_autoformat_triggers() {
     assert_eq!(paras(&s), vec![para("Alpha", Some(0)), para("beta", Some(0))]);
     assert_eq!(label_at(&s, 0), "%1.");
     let n = s.doc.para_at(&Pos::body(0, 0)).and_then(|p| p.props.numbering).unwrap();
-    assert_eq!(s.doc.numbering.level(n.num, 0).map(|l| l.format), Some(wordcraft_doc::section::NumFormat::LowerLetter));
+    assert_eq!(s.doc.numbering.level(n.num, 0).map(|l| l.format), Some(tabdocs_doc::section::NumFormat::LowerLetter));
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn border_line_autoformat() {
 
 #[test]
 fn a_large_mixed_document_types_like_word() {
-    // The corpus typed into Word and WordCraft side by side; the paragraph structure must match.
+    // The corpus typed into Word and TabDocs side by side; the paragraph structure must match.
     let mut s = s();
     let prose = "The keeper's log runs to four hundred pages, and almost every one begins with the weather. ";
     typ(&mut s, &format!("Notes\n{}\n", prose.repeat(20)));

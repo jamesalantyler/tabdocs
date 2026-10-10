@@ -4,13 +4,13 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use wordcraft_doc::math::MathJc;
-use wordcraft_doc::numbering::{Level, LevelSuffix};
-use wordcraft_doc::para::{COLUMN_BREAK, InlineObject, LINE_BREAK, NoteKind, OBJ, PAGE_BREAK, SOFT_HYPHEN};
-use wordcraft_doc::props::{Align, CharProps, LineSpacing, ParaProps, TabAlign, TabLeader, TabStop};
-use wordcraft_doc::resolve::{ResolvedChar, ResolvedPara};
-use wordcraft_doc::{Document, Paragraph};
-use wordcraft_fonts::FaceRef;
+use tabdocs_doc::math::MathJc;
+use tabdocs_doc::numbering::{Level, LevelSuffix};
+use tabdocs_doc::para::{COLUMN_BREAK, InlineObject, LINE_BREAK, NoteKind, OBJ, PAGE_BREAK, SOFT_HYPHEN};
+use tabdocs_doc::props::{Align, CharProps, LineSpacing, ParaProps, TabAlign, TabLeader, TabStop};
+use tabdocs_doc::resolve::{ResolvedChar, ResolvedPara};
+use tabdocs_doc::{Document, Paragraph};
+use tabdocs_fonts::FaceRef;
 
 use crate::fields::{FieldCtx, field_text};
 
@@ -168,14 +168,6 @@ impl Line {
             None => self.xs.last().copied().unwrap_or(self.left),
         }
     }
-    /// x of the line's visual end for the paragraph's direction, where its paragraph mark goes:
-    /// the right edge of the rightmost cluster in a left-to-right paragraph, the left edge of the
-    /// leftmost in a right-to-left one. Differs from [`Line::end_x`] when the logically last text
-    /// runs the other way (Hebrew ending a left-to-right paragraph, Latin ending a right-to-left one).
-    pub fn visual_end_x(&self) -> f32 {
-        let end = self.end_x();
-        if self.rtl { self.vis.iter().map(|v| v.x).fold(end, f32::min) } else { self.vis.iter().map(|v| v.x + v.w).fold(end, f32::max) }
-    }
     /// x where the hyphen of a hyphenated line (advance `adv`) is drawn.
     pub fn hyphen_x(&self, adv: f32) -> f32 {
         match self.vis.last() {
@@ -251,14 +243,13 @@ pub struct ParaLayout {
     /// Laid-out equations by object index.
     pub maths: Vec<(usize, Arc<crate::math::MathLayout>)>,
     /// Display equations (on lines of their own): cluster index and justification.
-    pub displays: Vec<(usize, wordcraft_doc::math::MathJc)>,
+    pub displays: Vec<(usize, tabdocs_doc::math::MathJc)>,
     /// Byte ranges of the text laid out as nothing ([`left_out`]): hidden text that is not shown,
     /// tracked deletions in the final text. Resolved as laid out, table formatting included.
     pub left_out: Vec<std::ops::Range<usize>>,
     /// The text drawn by clusters that stand for an object (field results, note numbers,
-    /// equations) rather than for the paragraph's own text, by cluster index, sorted, with each of
-    /// the cluster's glyphs' byte range in that text (a ligature's glyph spans its letters).
-    pub shown: Vec<(usize, String, Vec<std::ops::Range<usize>>)>,
+    /// equations) rather than for the paragraph's own text, by cluster index, sorted.
+    pub shown: Vec<(usize, String)>,
 }
 
 /// What a table style gives the text of a cell: its paragraph and run formatting, with the
@@ -311,7 +302,7 @@ struct Builder<'a> {
     /// Bidi level per byte of the paragraph text (empty: all left to right).
     levels: Vec<u8>,
     /// Text drawn by clusters that stand for an object, by cluster index (see `ParaLayout::shown`).
-    shown: Vec<(usize, String, Vec<std::ops::Range<usize>>)>,
+    shown: Vec<(usize, String)>,
 }
 
 /// What a piece of text is shaped as: one face, case, script formatting and direction.
@@ -341,7 +332,7 @@ fn is_mark(c: char) -> bool {
 /// Bidi embedding levels per byte of `text` (UAX #9 rules up to I2), or empty when the
 /// paragraph is left to right and has no right-to-left characters.
 pub fn bidi_levels(text: &str, rtl_para: bool) -> Vec<u8> {
-    if !rtl_para && !text.chars().any(wordcraft_fonts::is_rtl) {
+    if !rtl_para && !text.chars().any(tabdocs_fonts::is_rtl) {
         return Vec::new();
     }
     let level = if rtl_para { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() };
@@ -384,7 +375,7 @@ pub fn visual_order(levels: &[u8]) -> Vec<usize> {
 impl<'a> Builder<'a> {
     /// Style index for a resolved char in `face` (caps-scaled `size` override for small caps).
     fn style(&mut self, rc: &Arc<ResolvedChar>, face_override: Option<FaceRef>, small: bool) -> u16 {
-        let r = wordcraft_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
+        let r = tabdocs_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
         let face = face_override.unwrap_or(r.face);
         // The display list reads every run's format (link target, strike kind, underline colour,
         // baseline shift…) from its StyleRun, so runs share one only when their formats are equal.
@@ -410,7 +401,7 @@ impl<'a> Builder<'a> {
             }
         }
         let size = rc.draw_size() * if small { 0.8 } else { 1.0 };
-        let (a, d) = wordcraft_fonts::word::line_metrics(&face);
+        let (a, d) = tabdocs_fonts::word::line_metrics(&face);
         let k = size as f64 / face.upem.max(1.0);
         // A fallback face (letters the requested font lacks) is emboldened or slanted when it has
         // no bold or italic of its own.
@@ -448,8 +439,8 @@ impl<'a> Builder<'a> {
         // Complex-script characters (Persian, Arabic…) use the run's complex-script font, size,
         // bold and italic.
         let rc_cs: Option<Arc<ResolvedChar>> = text.chars().any(|c| rc.uses_complex(c)).then(|| Arc::new(rc.complex()));
-        let primary = wordcraft_fonts::word::resolve(&rc.font, rc.bold, rc.italic).face;
-        let primary_cs = rc_cs.as_ref().map(|r| wordcraft_fonts::word::resolve(&r.font, r.bold, r.italic).face);
+        let primary = tabdocs_fonts::word::resolve(&rc.font, rc.bold, rc.italic).face;
+        let primary_cs = rc_cs.as_ref().map(|r| tabdocs_fonts::word::resolve(&r.font, r.bold, r.italic).face);
         let use_levels = para_text && !self.levels.is_empty();
         // Split by font coverage (fallback faces), small caps case, script formatting and direction.
         let mut seg_start = 0;
@@ -469,7 +460,7 @@ impl<'a> Builder<'a> {
                 Some(SegKey { face: Some(f), .. }) if f.covers(c) => Some(f),
                 _ => {
                     let (bold, italic) = if complex { (rc.bold_cs, rc.italic_cs) } else { (rc.bold, rc.italic) };
-                    wordcraft_fonts::FontDb::global().fallback_styled(c, prim.id(), bold, italic).map(|f| FaceRef::of(&f))
+                    tabdocs_fonts::FontDb::global().fallback_styled(c, prim.id(), bold, italic).map(|f| FaceRef::of(&f))
                 }
             };
             let small = rc.small_caps && !rc.caps && c.is_lowercase();
@@ -501,9 +492,9 @@ impl<'a> Builder<'a> {
             let upper = rc.caps || small;
             let map = |c: char| if upper { c.to_uppercase().next().unwrap_or(c) } else { c };
             let shaped = if use_levels {
-                wordcraft_fonts::shape_run(&st.face, sub, &[], map, key.rtl)
+                tabdocs_fonts::shape_run(&st.face, sub, &[], map, key.rtl)
             } else {
-                wordcraft_fonts::shape(&st.face, sub, &[], map)
+                tabdocs_fonts::shape(&st.face, sub, &[], map)
             };
             let k = st.size / st.face.upem.max(1.0) as f32;
             let hscale = rc.scale / 100.0;
@@ -573,28 +564,18 @@ impl<'a> Builder<'a> {
             });
             return;
         };
-        // Merge into one cluster: rebase glyph dx onto the first cluster, and keep each glyph's
-        // text (a ligature's glyph takes the letters of the clusters after it that have none).
+        // Merge into one cluster: rebase glyph dx onto the first cluster.
         let mut x = 0.0;
-        let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
         for c in &added {
             for g in self.glyphs.get_mut(c.g0 as usize..c.g1 as usize).into_iter().flatten() {
                 g.dx += x;
             }
             x += c.adv;
-            let (a, b) = (c.start.saturating_sub(start), c.end.saturating_sub(start));
-            if c.g1 <= c.g0 {
-                let from = ranges.last().map(|r| r.start);
-                for r in ranges.iter_mut().rev().take_while(|r| Some(r.start) == from) {
-                    r.end = b;
-                }
-            }
-            ranges.extend((c.g0..c.g1).map(|_| a..b));
         }
         let g0 = first.g0;
         let style = first.style;
         let g1 = added.last().map(|c| c.g1).unwrap_or(g0);
-        self.shown.push((self.clusters.len(), text.to_string(), ranges));
+        self.shown.push((self.clusters.len(), text.to_string()));
         self.clusters.push(Cluster { start, end, adv: x, kind: ClKind::Text, style, g0, g1, break_after: false, obj_h: 0.0, obj_d: 0.0, dot: false });
     }
 }
@@ -732,10 +713,8 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                     let k = obj_index;
                     obj_index += 1;
                     match p.objects.get(k) {
-                        Some(o) if o.is_drawing() => {
-                            if let Some((w, h, float)) = o.frame()
-                                && float.wrap == wordcraft_doc::para::Wrap::Inline
-                            {
+                        Some(InlineObject::Image { w, h, float, .. }) | Some(InlineObject::Shape { w, h, float, .. }) => {
+                            if float.wrap == tabdocs_doc::para::Wrap::Inline {
                                 let maxw = (env.width - rp.indent_left.max(0.0) - rp.indent_right.max(0.0)).max(18.0);
                                 let (w, h) = (w.clamp(1.0, 4000.0), h.clamp(1.0, 4000.0));
                                 let s = if w > maxw { maxw / w } else { 1.0 };
@@ -762,7 +741,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                                 custom.clone()
                             };
                             let mut sup = (*rc).clone();
-                            sup.vert_align = wordcraft_doc::props::VertAlign::Superscript;
+                            sup.vert_align = tabdocs_doc::props::VertAlign::Superscript;
                             b.shape_atomic(&num, start, end, &Arc::new(sup));
                             notes.push((b.clusters.len().saturating_sub(1), *id));
                         }
@@ -824,19 +803,19 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let to_para = |i: usize| -> Option<usize> {
         if left.is_empty() { Some(i) } else { ends.binary_search_by_key(&i, |e| e.0).ok().and_then(|k| ends.get(k)).map(|e| e.1) }
     };
-    let mut found = Vec::new();
+    let mut opps = std::collections::HashSet::new();
     for (i, o) in unicode_linebreak::linebreaks(&text) {
         // Word keeps "and/or" and web addresses whole: no break right after a slash (a word
         // too long for the line still breaks anywhere).
         let after_slash =
             text.get(..i).is_some_and(|t| t.ends_with('/')) && text.get(i..).and_then(|t| t.chars().next()).is_some_and(char::is_alphanumeric);
-        if (o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len()) && !after_slash {
-            found.push(i);
+        if (o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len())
+            && !after_slash
+            && let Some(end) = to_para(i)
+        {
+            opps.insert(end);
         }
     }
-    // Asian typography: kinsoku and breaking Latin words anywhere.
-    crate::kinsoku::apply(&text, &mut found, rp.kinsoku, rp.word_wrap);
-    let opps: std::collections::HashSet<usize> = found.into_iter().filter_map(to_para).collect();
     for c in &mut b.clusters {
         c.break_after = opps.contains(&c.end) || matches!(c.kind, ClKind::Object(_) | ClKind::Tab);
     }
@@ -848,10 +827,10 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         // A Symbol/Wingdings bullet (U+F0B7…) without that font installed, or in a face that has
         // no glyph at the private-use code: draw the standard character instead, since a
         // substitute has another glyph, or none, there.
-        let r = wordcraft_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
+        let r = tabdocs_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
         let text: String = text
             .chars()
-            .map(|c| match wordcraft_fonts::word::symbol_font_char(&rc.font, c) {
+            .map(|c| match tabdocs_fonts::word::symbol_font_char(&rc.font, c) {
                 Some(u) if r.substituted || !r.face.covers(c) => u,
                 _ => c,
             })
@@ -938,7 +917,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u16, suffix: Opti
     let first_left = rp.indent_left + rp.indent_first;
     // Word 2013+ (compatibility mode 15) fits more text on a justified line by shrinking its
     // spaces, up to MAX_SPACE_SHRINK of their width; never on lines with tabs.
-    let shrink_spaces = rp.align == Align::Justify && env.doc.settings.compat_mode >= wordcraft_doc::COMPAT_MODE_CURRENT;
+    let shrink_spaces = rp.align == Align::Justify && env.doc.settings.compat_mode >= tabdocs_doc::COMPAT_MODE_CURRENT;
     let hanging_at = if rp.indent_first < 0.0 { Some(rp.indent_left) } else { None };
     let n = pl.clusters.len();
     // A right-to-left paragraph is laid out from its start edge, as if mirrored: indents, tabs,
@@ -1504,9 +1483,8 @@ fn reorder_line(pl: &ParaLayout, line: &mut Line, width: f32) {
     line.xs = line.vis.iter().map(|v| v.x).chain(std::iter::once(end)).collect();
 }
 
-/// Narrowest span text flows into beside a floating object, points. Word puts an empty
-/// paragraph beside a floating table in a 21.3pt gap but not in an 18.6pt one.
-const MIN_SPAN: f32 = 20.0;
+/// Narrowest span text flows into beside a floating object, points.
+const MIN_SPAN: f32 = 36.0;
 
 /// The spans of a row at `top` (about `h` tall) between `lo` and `hi` that text can use around
 /// the exclusions, left to right (Square wrapping uses both sides of an object). `Err(y)`: none
@@ -1579,7 +1557,7 @@ fn hyphen_glyph(pl: &ParaLayout, style: u16, cache: &mut Vec<(u16, u32, f32)>) -
         .styles
         .get(style as usize)
         .and_then(|st| {
-            let g = wordcraft_fonts::shape(&st.face, "-", &[], |c| c).into_iter().next()?;
+            let g = tabdocs_fonts::shape(&st.face, "-", &[], |c| c).into_iter().next()?;
             let k = st.size / st.face.upem.max(1.0) as f32 * st.rc.scale / 100.0;
             Some((style, g.gid, g.x_advance as f32 * k))
         })
@@ -1595,7 +1573,7 @@ fn hyphen_glyph(pl: &ParaLayout, style: u16, cache: &mut Vec<(u16, u32, f32)>) -
 fn hyphenation_points(text: &str, to_para: impl Fn(usize) -> Option<usize>, pl: &ParaLayout, auto: bool) -> Vec<u32> {
     let mut bytes: Vec<usize> = text.char_indices().filter(|(_, c)| *c == SOFT_HYPHEN).map(|(i, c)| i + c.len_utf8()).collect();
     if auto {
-        let lim = wordcraft_proof::hyphen::Limits::default();
+        let lim = tabdocs_proof::hyphen::Limits::default();
         let mut start: Option<usize> = None;
         for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
             let word_char = c.is_alphabetic() || c == '\'' || c == '\u{2019}';
@@ -1605,10 +1583,10 @@ fn hyphenation_points(text: &str, to_para: impl Fn(usize) -> Option<usize>, pl: 
                     // The patterns are for Latin-script languages: never hyphenate Persian/Arabic words.
                     if let Some(w) = text.get(a..i)
                         && w.chars().count() >= lim.min_word
-                        && !w.chars().any(wordcraft_fonts::is_rtl)
+                        && !w.chars().any(tabdocs_fonts::is_rtl)
                     {
                         let offs: Vec<usize> = w.char_indices().map(|(o, _)| o).collect();
-                        for pt in wordcraft_proof::hyphen::hyphen_points(w, &lim) {
+                        for pt in tabdocs_proof::hyphen::hyphen_points(w, &lim) {
                             if let Some(o) = offs.get(pt) {
                                 bytes.push(a + o);
                             }
@@ -1796,17 +1774,17 @@ fn proof_issues(p: &Paragraph) -> Vec<(usize, usize, bool)> {
         p.run_ranges().any(|(r, c)| r.start < b && a < r.end && (c.no_proof == Some(true) || c.hidden == Some(true) || c.link.is_some()))
     };
     let mut v: Vec<(usize, usize, bool)> =
-        wordcraft_proof::check_spelling(&text).into_iter().filter(|i| !skip(i.start, i.end)).map(|i| (i.start, i.end, false)).collect();
-    v.extend(wordcraft_proof::check_grammar(&text).into_iter().filter(|i| !skip(i.start, i.end)).map(|i| (i.start, i.end, true)));
+        tabdocs_proof::check_spelling(&text).into_iter().filter(|i| !skip(i.start, i.end)).map(|i| (i.start, i.end, false)).collect();
+    v.extend(tabdocs_proof::check_grammar(&text).into_iter().filter(|i| !skip(i.start, i.end)).map(|i| (i.start, i.end, true)));
     v
 }
 
 /// Text for proofing with the same byte offsets: inline objects and tracked deletions become
 /// U+0001 bytes (neither words nor spaces).
-pub fn proof_text(p: &wordcraft_doc::Paragraph) -> String {
+pub fn proof_text(p: &tabdocs_doc::Paragraph) -> String {
     let mut out = String::with_capacity(p.text.len());
     for (i, c) in p.text.char_indices() {
-        let deleted = c == wordcraft_doc::para::OBJ || p.props_of_char(i).del.is_some();
+        let deleted = c == tabdocs_doc::para::OBJ || p.props_of_char(i).del.is_some();
         if deleted {
             for _ in 0..c.len_utf8() {
                 out.push('\u{1}');

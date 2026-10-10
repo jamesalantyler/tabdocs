@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::para::{bidi_levels, visual_order};
-use wordcraft_doc::props::{Align, ParaProps};
-use wordcraft_doc::{Pos, StoryRef};
+use tabdocs_doc::props::{Align, ParaProps};
+use tabdocs_doc::{Pos, StoryRef};
 
 fn lay(doc: &Document) -> DocLayout {
     let mut c = LayoutCache::new();
@@ -131,7 +131,7 @@ fn numbers_and_latin_inside_persian_keep_their_order() {
 
 #[test]
 fn caret_and_hit_agree_in_bidi_text() {
-    for (s, rtl) in [("سلام world ۱۲۳", true), ("Hello سلام دنیا end", false), ("کتاب «WordCraft» (نسخه ۲)", true)] {
+    for (s, rtl) in [("سلام world ۱۲۳", true), ("Hello سلام دنیا end", false), ("کتاب «TabDocs» (نسخه ۲)", true)] {
         let d = doc_of(&[(s, rtl)]);
         let l = lay(&d);
         let (pl, _) = first_line(&l, 0);
@@ -214,9 +214,9 @@ fn rtl_indents_and_alignment_are_measured_from_the_right() {
 #[test]
 fn rtl_list_label_sits_on_the_right() {
     let mut d = doc_of(&[("مورد اول", true), ("مورد دوم", true)]);
-    let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+    let id = d.numbering.add_list(tabdocs_doc::ListKind::Numbered);
     d.format_paragraphs(&Pos::body(0, 0), &Pos::body(1, 0), &|p: &mut ParaProps| {
-        p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 })
+        p.numbering = Some(tabdocs_doc::props::NumRef { num: id, level: 0 })
     })
     .unwrap();
     let l = lay(&d);
@@ -240,7 +240,7 @@ fn rtl_empty_and_trailing_lines_mirror() {
     // A paragraph ending in a line break gets an empty last line, also on the right.
     let mut d = doc_of(&[("سطر", true)]);
     let end = "سطر".len();
-    d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().insert_text(end, "\n", &Default::default()).unwrap();
+    d.para_mut(StoryRef::Body, &tabdocs_doc::Path::top(0)).unwrap().insert_text(end, "\n", &Default::default()).unwrap();
     let l = lay(&d);
     assert!((caret_x(&l, 0, end + 1) - 540.0).abs() < 0.5, "{}", caret_x(&l, 0, end + 1));
 }
@@ -299,21 +299,8 @@ fn hostile_bidi_text_never_panics() {
 }
 
 /// A face that has Arabic letters (installed system fonts), or `None` to skip.
-fn arabic_face() -> Option<wordcraft_fonts::FaceRef> {
-    wordcraft_fonts::FontDb::global().fallback_for('ب', 0).map(|f| wordcraft_fonts::FaceRef::of(&f)).filter(|f| f.covers('پ'))
-}
-
-/// The glyph ids of each cluster, in order. A font may draw a letter as several glyphs (Noto
-/// Naskh Arabic draws ب as its dotless form plus the dot), so letters are compared by cluster.
-fn cluster_glyphs(glyphs: &[wordcraft_fonts::ShapedGlyph]) -> Vec<Vec<u32>> {
-    let mut out: Vec<(usize, Vec<u32>)> = Vec::new();
-    for g in glyphs {
-        match out.last_mut() {
-            Some((c, ids)) if *c == g.cluster => ids.push(g.gid),
-            _ => out.push((g.cluster, vec![g.gid])),
-        }
-    }
-    out.into_iter().map(|(_, ids)| ids).collect()
+fn arabic_face() -> Option<tabdocs_fonts::FaceRef> {
+    tabdocs_fonts::FontDb::global().fallback_for('ب', 0).map(|f| tabdocs_fonts::FaceRef::of(&f)).filter(|f| f.covers('پ'))
 }
 
 #[test]
@@ -322,22 +309,21 @@ fn persian_letters_join_and_brackets_mirror() {
         eprintln!("skipped: no font with Persian letters installed");
         return;
     };
-    let isolated = cluster_glyphs(&wordcraft_fonts::shape_run(&face, "ب", &[], |c| c, true));
-    assert_eq!(isolated.len(), 1, "{isolated:?}");
-    let shaped = wordcraft_fonts::shape_run(&face, "ببب", &[], |c| c, true);
-    let joined = cluster_glyphs(&shaped);
-    assert_eq!(joined.len(), 3, "one cluster per letter: {joined:?}");
-    assert!(shaped.iter().all(|g| g.gid != 0), "the font has the letters");
+    let isolated = tabdocs_fonts::shape_run(&face, "ب", &[], |c| c, true);
+    let joined = tabdocs_fonts::shape_run(&face, "ببب", &[], |c| c, true);
+    assert_eq!(joined.len(), 3);
+    assert!(joined.iter().all(|g| g.gid != 0), "the font has the letters");
     // Initial, medial and final forms differ from the isolated letter.
-    assert!(joined.iter().any(|g| *g != isolated[0]), "cursive joining picks contextual forms: {joined:?} {isolated:?}");
+    assert!(joined.iter().any(|g| g.gid != isolated[0].gid), "cursive joining picks contextual forms");
     // Clusters come back in logical order.
-    assert!(shaped.windows(2).all(|w| w[0].cluster <= w[1].cluster));
+    assert!(joined.windows(2).all(|w| w[0].cluster <= w[1].cluster));
     // ZWNJ (نیم‌فاصله) breaks the join: "می‌خواهم" keeps می separate.
-    let with_zwnj = cluster_glyphs(&wordcraft_fonts::shape_run(&face, "ب\u{200C}ب", &[], |c| c, true));
-    assert_eq!(with_zwnj.first(), isolated.first(), "a letter before ZWNJ takes its isolated form");
+    let with_zwnj = tabdocs_fonts::shape_run(&face, "ب\u{200C}ب", &[], |c| c, true);
+    let first = with_zwnj.first().map(|g| g.gid);
+    assert_eq!(first, Some(isolated[0].gid), "a letter before ZWNJ takes its isolated form");
     // In right-to-left text, "(" is drawn with the mirrored glyph.
-    let open = wordcraft_fonts::shape_run(&face, "(", &[], |c| c, true);
-    let close = wordcraft_fonts::shape_run(&face, ")", &[], |c| c, false);
+    let open = tabdocs_fonts::shape_run(&face, "(", &[], |c| c, true);
+    let close = tabdocs_fonts::shape_run(&face, ")", &[], |c| c, false);
     if let (Some(o), Some(c)) = (open.first(), close.first())
         && c.gid != 0
     {
@@ -365,13 +351,9 @@ fn persian_text_in_a_latin_font_stays_in_one_fallback_face() {
 
 #[test]
 fn glyph_runs_carry_their_text_for_pdf_export() {
-    let s = "سلام WordCraft می‌خواهم";
+    let s = "سلام TabDocs می‌خواهم";
     let d = doc_of(&[(s, true)]);
     let l = lay(&d);
-    let lam_alef_ligature = arabic_face().is_some_and(|f| {
-        let g = wordcraft_fonts::shape_run(&f, "لا", &[], |c| c, true);
-        !g.is_empty() && g.iter().all(|g| g.cluster == 0)
-    });
     let mut all = String::new();
     for it in display::page_display(&d, &l.pages[0], &Default::default()) {
         if let display::Draw::Glyphs { glyphs, text, ranges, .. } = it {
@@ -379,9 +361,8 @@ fn glyph_runs_carry_their_text_for_pdf_export() {
             for r in &ranges {
                 assert!(text.get(r.clone()).is_some_and(|t| !t.is_empty()), "{r:?} in {text:?}");
             }
-            // A ligature glyph (لا) shows both its letters (when the Persian font draws one: some,
-            // such as Noto Naskh Arabic, draw the lam and the alef as glyphs of their own).
-            for r in ranges.iter().filter(|_| lam_alef_ligature) {
+            // A ligature glyph (لا) shows both its letters (when a Persian font draws it).
+            for r in ranges.iter().filter(|_| arabic_face().is_some()) {
                 if text.get(r.clone()) == Some("ل") {
                     panic!("the lam of لا is drawn as one glyph with the alef: {text:?} {ranges:?}");
                 }
@@ -396,7 +377,7 @@ fn glyph_runs_carry_their_text_for_pdf_export() {
 fn character_border_boxes_a_whole_rtl_word() {
     let s = "کتاب خوب";
     let mut d = doc_of(&[(s, true)]);
-    let b = wordcraft_doc::props::Border { space: 0.0, ..wordcraft_doc::props::Border::single(0.5) };
+    let b = tabdocs_doc::props::Border { space: 0.0, ..tabdocs_doc::props::Border::single(0.5) };
     d.format_range(&Pos::body(0, 0), &Pos::body(0, at(s, 4)), &|c| c.border = Some(b)).unwrap();
     let l = lay(&d);
     let (pl, x) = first_line(&l, 0);
@@ -424,8 +405,8 @@ fn inline_picture_in_rtl_text_sits_in_its_place() {
     let mut d = doc_of(&[(s, true)]);
     let off = at(s, 4);
     let pic =
-        wordcraft_doc::InlineObject::Image { media: "m".into(), w: 30.0, h: 20.0, alt: String::new(), float: Default::default(), crop: [0.0; 4] };
-    d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().insert_object(off, pic, &Default::default()).unwrap();
+        tabdocs_doc::InlineObject::Image { media: "m".into(), w: 30.0, h: 20.0, alt: String::new(), float: Default::default(), crop: [0.0; 4] };
+    d.para_mut(StoryRef::Body, &tabdocs_doc::Path::top(0)).unwrap().insert_object(off, pic, &Default::default()).unwrap();
     let l = lay(&d);
     let (pl, x) = first_line(&l, 0);
     let line = &pl.lines[0];

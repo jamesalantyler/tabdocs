@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use egui::{Rect, Response, Sense, Stroke, TextureHandle, Ui, pos2, vec2};
 use serde_json::{Value, json};
-use wordcraft_doc::props::CharProps;
-use wordcraft_doc::{Block, Document, Paragraph, Table, para_block};
+use tabdocs_doc::props::CharProps;
+use tabdocs_doc::{Block, Document, Paragraph, Table, para_block};
 
 use crate::WordApp;
 use crate::theme::{Tokens, regular};
@@ -25,8 +25,8 @@ pub struct Previews {
 impl Previews {
     pub fn families(&mut self) -> Vec<String> {
         if self.families.is_none() {
-            let mut f: Vec<String> = wordcraft_fonts::FontDb::global().families().into_iter().filter(|f| !f.starts_with('.')).collect();
-            for w in [wordcraft_doc::styles::BODY_FONT, wordcraft_doc::styles::HEADING_FONT] {
+            let mut f: Vec<String> = tabdocs_fonts::FontDb::global().families().into_iter().filter(|f| !f.starts_with('.')).collect();
+            for w in [tabdocs_doc::styles::BODY_FONT, tabdocs_doc::styles::HEADING_FONT] {
                 if !f.iter().any(|x| x == w) {
                     f.push(w.to_string());
                 }
@@ -137,7 +137,7 @@ pub fn math_texture(
     app: &mut WordApp,
     ctx: &egui::Context,
     key: &str,
-    nodes: &wordcraft_doc::math::Arg,
+    nodes: &tabdocs_doc::math::Arg,
     display: bool,
     pt: f32,
     size: egui::Vec2,
@@ -147,15 +147,15 @@ pub fn math_texture(
     app.previews.get_or(ctx, &k, || math_image(nodes, display, pt, size.x, size.y, ppp))
 }
 
-fn math_image(nodes: &wordcraft_doc::math::Arg, display: bool, pt: f32, w: f32, h: f32, ppp: f32) -> Option<egui::ColorImage> {
-    use wordcraft_doc::math::{Math, to_linear};
+fn math_image(nodes: &tabdocs_doc::math::Arg, display: bool, pt: f32, w: f32, h: f32, ppp: f32) -> Option<egui::ColorImage> {
+    use tabdocs_doc::math::{Math, to_linear};
     let props = CharProps { size: Some(pt), ..Default::default() };
     let mut p = Paragraph::with_text("", props.clone());
-    p.props.align = Some(wordcraft_doc::props::Align::Center);
+    p.props.align = Some(tabdocs_doc::props::Align::Center);
     p.props.space_before = Some(0.0);
     p.props.space_after = Some(0.0);
-    p.props.line_spacing = Some(wordcraft_doc::props::LineSpacing::Multiple(1.0));
-    let eq = wordcraft_doc::InlineObject::Equation { linear: to_linear(nodes), display, math: Math { nodes: nodes.clone(), ..Default::default() } };
+    p.props.line_spacing = Some(tabdocs_doc::props::LineSpacing::Multiple(1.0));
+    let eq = tabdocs_doc::InlineObject::Equation { linear: to_linear(nodes), display, math: Math { nodes: nodes.clone(), ..Default::default() } };
     p.insert_object(0, eq, &props).ok()?;
     let mut d = Document::new();
     d.body = vec![para_block(p)];
@@ -165,20 +165,20 @@ fn math_image(nodes: &wordcraft_doc::math::Arg, display: bool, pt: f32, w: f32, 
     d.last_section.margin_right = 0.0;
     d.last_section.margin_top = 0.0;
     d.last_section.margin_bottom = 0.0;
-    let l = wordcraft_layout::layout(&d, &mut wordcraft_layout::LayoutCache::new(), &Default::default());
+    let l = tabdocs_layout::layout(&d, &mut tabdocs_layout::LayoutCache::new(), &Default::default());
     let page = l.pages.first()?;
     // Centre the equation's line in the tile.
     let mid = page
         .items
         .iter()
         .find_map(|it| match it {
-            wordcraft_layout::Placed::Lines { para, y, .. } => Some(y + para.height / 2.0),
+            tabdocs_layout::Placed::Lines { para, y, .. } => Some(y + para.height / 2.0),
             _ => None,
         })
         .unwrap_or(h / 2.0);
-    let mut opts = wordcraft_render::RenderOptions::default();
+    let mut opts = tabdocs_render::RenderOptions::default();
     opts.display.placeholders = true;
-    let img = wordcraft_render::render_area(&d, page, 0.0, mid - h / 2.0, w, h, ppp, &opts);
+    let img = tabdocs_render::render_area(&d, page, 0.0, mid - h / 2.0, w, h, ppp, &opts);
     let px = img.to_straight();
     Some(egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &px))
 }
@@ -195,7 +195,7 @@ fn snippet_blocks(
     h: f32,
     ppp: f32,
     margin: f32,
-    paper: Option<wordcraft_doc::Rgb>,
+    paper: Option<tabdocs_doc::Rgb>,
 ) -> Option<egui::ColorImage> {
     let mut d = Document::new();
     d.styles = base.styles.clone();
@@ -207,64 +207,15 @@ fn snippet_blocks(
     d.last_section.margin_right = margin;
     d.last_section.margin_top = margin;
     d.last_section.margin_bottom = 0.0;
-    let l = wordcraft_layout::layout(&d, &mut wordcraft_layout::LayoutCache::new(), &Default::default());
+    let l = tabdocs_layout::layout(&d, &mut tabdocs_layout::LayoutCache::new(), &Default::default());
     let page = l.pages.first()?;
     let mut opts = crate::canvas::screen_render_options();
     if let Some(p) = paper {
         opts.paper = p;
     }
-    let img = wordcraft_render::render_area(&d, page, 0.0, 0.0, w + 2.0 * margin, h + margin, ppp, &opts);
+    let img = tabdocs_render::render_area(&d, page, 0.0, 0.0, w + 2.0 * margin, h + margin, ppp, &opts);
     let px = img.to_straight();
     Some(egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &px))
-}
-
-/// Manage Styles' preview of one style (`ty`: the `styles.manage` type), `size` points wide and
-/// tall: a line of sample text, or a small table for a table style.
-pub fn style_preview(app: &mut WordApp, ui: &mut Ui, id: &str, ty: &str, size: egui::Vec2) {
-    let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect(r, 3.0, egui::Color32::WHITE, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-    let rev = app.session.rev();
-    let skey = app.previews.styles_key(&app.session.doc, rev);
-    let ppp = ui.ctx().pixels_per_point();
-    let (w, h) = (size.x - 12.0, size.y - 8.0);
-    let key = format!("manage:{id}:{ty}:{skey}:{ppp}:{w}x{h}");
-    let doc = &app.session.doc;
-    let tex = app.previews.get_or(ui.ctx(), &key, || {
-        let block = match ty {
-            "table" => {
-                let mut tb = Table::new(3, 4, w - 4.0);
-                tb.props.style = Some(id.to_string());
-                for (ri, row) in tb.rows.iter_mut().enumerate() {
-                    for (ci, cell) in row.cells.iter_mut().enumerate() {
-                        let txt = match (ri, ci) {
-                            (0, c) => ["", "A", "B", "C"].get(c).copied().unwrap_or(""),
-                            (_, 0) => "Row",
-                            _ => "1",
-                        };
-                        cell.blocks = vec![para_block(Paragraph::with_text(txt, CharProps::default()))];
-                    }
-                }
-                Block::Table(tb)
-            }
-            "character" => Block::Para(Paragraph::with_text("AaBbCcYyZz", CharProps { style: Some(id.to_string()), ..CharProps::default() })),
-            _ => {
-                let mut p = Paragraph::with_text("AaBbCcYyZz", CharProps::default()).styled(id);
-                p.props.space_before = Some(0.0);
-                p.props.indent_left = Some(0.0);
-                p.props.indent_first = Some(0.0);
-                p.props.numbering = None;
-                Block::Para(p)
-            }
-        };
-        snippet_blocks(doc, vec![block], w, h, ppp, 4.0, None)
-    });
-    if let Some(hd) = tex {
-        let sz = hd.size_vec2() / ppp;
-        let ir = Rect::from_min_size(pos2(r.min.x + 2.0, r.min.y + 2.0), sz.min(r.size() - vec2(4.0, 4.0)));
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((ir.width() / sz.x).min(1.0), (ir.height() / sz.y).min(1.0)));
-        ui.painter().with_clip_rect(r).image(hd.id(), ir, uv, egui::Color32::WHITE);
-    }
 }
 
 /// The Home tab's Styles gallery.
@@ -293,7 +244,7 @@ pub fn style_gallery(app: &mut WordApp, ui: &mut Ui, state: &Value) {
         let tex = app.previews.get_or(ui.ctx(), &key, || {
             let mut p = Paragraph::with_text("AaBbCcDd", CharProps::default()).styled(id);
             p.props.space_before = Some(0.0);
-            p.props.align = Some(wordcraft_doc::Align::Left);
+            p.props.align = Some(tabdocs_doc::Align::Left);
             // Keep hanging indents (bullets) but start the first line at the tile's left edge.
             let first = doc.styles.resolve_para(&p.props).indent_first;
             p.props.indent_left = Some(if first.is_finite() { (-first).max(0.0) } else { 0.0 });
@@ -348,7 +299,7 @@ pub fn style_set_gallery(app: &mut WordApp, ui: &mut Ui) {
         }
         let key = format!("set:{name}:{ppp}");
         let tex = app.previews.get_or(ui.ctx(), &key, || {
-            let mut s = wordcraft_engine::Session::new(Document::new());
+            let mut s = tabdocs_engine::Session::new(Document::new());
             let _ = s.run("design.styleSet", &json!({"name": name}));
             let blocks = vec![
                 Block::Para(Paragraph::with_text("Title", CharProps::default()).styled("Title")),
@@ -378,9 +329,7 @@ pub fn table_style_tile(ui: &mut Ui, app: &mut WordApp, style: &str) -> Response
     if resp.hovered() {
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
-    // Keyed by the style sheet too, so a modified table style redraws.
-    let skey = app.previews.styles_key(&app.session.doc, app.session.rev());
-    let key = format!("tstyle:{style}:{skey}:{ppp}");
+    let key = format!("tstyle:{style}:{ppp}");
     let doc = &app.session.doc;
     let tex = app.previews.get_or(ui.ctx(), &key, || {
         let mut tb = Table::new(5, 4, 100.0);

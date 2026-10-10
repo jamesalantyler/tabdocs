@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use wordcraft_doc::{Align, Document};
+use tabdocs_doc::{Align, Document};
 
 use crate::model::{
     self, Cell, FBlock, FTable, Flow, Fmt, Inline, Kind, ListInfo, Meta, Para, base64_encode, data_uri, make_img, mime_of, parse_color,
@@ -956,7 +956,7 @@ impl<'r> Builder<'r> {
             "code" | "kbd" | "tt" | "samp" => fmt.code = true,
             "sup" => fmt.sup = true,
             "sub" => fmt.sub = true,
-            "mark" => fmt.background = Some(wordcraft_doc::Rgb(255, 255, 0)),
+            "mark" => fmt.background = Some(tabdocs_doc::Rgb(255, 255, 0)),
             "font" => {
                 if let Some(c) = attr(attrs, "color").and_then(parse_color) {
                     fmt.color = Some(c);
@@ -1237,8 +1237,6 @@ pub fn inlines_html(inlines: &[Inline]) -> String {
                 ));
             }
             Inline::Anchor(a) => o.push_str(&format!("<a id=\"{}\"></a>", esc(a))),
-            // No picture to show: the browser shows the alt text in its place.
-            Inline::Figure(alt) => o.push_str(&format!("<img alt=\"{}\">", esc(alt))),
             Inline::Equation { .. } => {}
         }
     }
@@ -1420,7 +1418,7 @@ pub fn export_flow(flow: &Flow, lang: &str) -> String {
     let mut out = String::new();
     out.push_str("<!DOCTYPE html>\n");
     out.push_str(&format!("<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n", esc(lang)));
-    out.push_str("<meta name=\"generator\" content=\"WordCraft\">\n");
+    out.push_str("<meta name=\"generator\" content=\"TabDocs\">\n");
     out.push_str(&format!("<title>{}</title>\n", esc(&m.title)));
     for (k, v) in [("author", &m.author), ("description", &m.description), ("keywords", &m.keywords), ("subject", &m.subject)] {
         if !v.is_empty() {
@@ -1454,7 +1452,7 @@ mod tests {
     fn table_style(html: &str) -> Option<String> {
         let doc = crate::model::to_doc(&parse(html));
         doc.body.iter().find_map(|b| match &**b {
-            wordcraft_doc::Block::Table(t) => Some(t.props.style.clone().unwrap_or_default()),
+            tabdocs_doc::Block::Table(t) => Some(t.props.style.clone().unwrap_or_default()),
             _ => None,
         })
     }
@@ -1522,7 +1520,7 @@ mod tests {
         let f = parse("<p style='text-align:center'><span style=\"color:#ff0000;font-weight:700\">red</span> <a href=\"http://x\">l</a><br>n</p>");
         let FBlock::Para(p) = &f.blocks[0] else { panic!() };
         assert_eq!(p.align, Some(Align::Center));
-        assert!(matches!(&p.inlines[0], Inline::Text(t, f) if t == "red" && f.bold && f.color == Some(wordcraft_doc::Rgb(255,0,0))));
+        assert!(matches!(&p.inlines[0], Inline::Text(t, f) if t == "red" && f.bold && f.color == Some(tabdocs_doc::Rgb(255,0,0))));
         assert!(p.inlines.iter().any(|i| matches!(i, Inline::Text(t, f) if t == "l" && f.link.as_deref() == Some("http://x"))));
         assert!(p.text().ends_with("l\nn"));
     }

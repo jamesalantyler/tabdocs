@@ -1,6 +1,6 @@
-//! [`wordcraft_doc::math`] tree → Office Math (OMML).
+//! [`tabdocs_doc::math`] tree → Office Math (OMML).
 
-use wordcraft_doc::math::{Arg, ColJc, FracKind, LimLoc, MAX_DEPTH, MNode, MRun, MScr, MSty, Math, MathJc, ScriptKind, parse_linear};
+use tabdocs_doc::math::{Arg, ColJc, FracKind, LimLoc, MAX_DEPTH, MNode, MRun, MScr, MSty, Math, MathJc, ScriptKind, parse_linear};
 
 use crate::xml::W;
 
@@ -50,7 +50,7 @@ pub fn resolve_numbers(math: &Math, display: bool, counter: &mut u32) -> Option<
     let mut out = rows.clone();
     let mut changed = false;
     for row in out.iter_mut() {
-        if !wordcraft_doc::math::has_number_mark(row) {
+        if !tabdocs_doc::math::has_number_mark(row) {
             continue;
         }
         *counter = counter.saturating_add(1);
@@ -309,7 +309,7 @@ fn node(w: &mut W, n: &MNode, depth: usize) {
             w.open("m:eqArr", &[]);
             w.open("m:eqArrPr", &[]);
             // Numbered rows (`#`) stretch across the line so the number reaches the margin.
-            if rows.iter().any(|r| wordcraft_doc::math::has_number_mark(r)) {
+            if rows.iter().any(|r| tabdocs_doc::math::has_number_mark(r)) {
                 val(w, "m:maxDist", "1");
             }
             ctrl(w);

@@ -1,19 +1,18 @@
 [package]
-name = "wordcraft-render"
+name = "tabdocs-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "WordCraft rasteriser: pages and thumbnails from the layout display list (vello_cpu), PNG/JPEG export"
+description = "TabDocs rasteriser: pages and thumbnails from the layout display list (vello_cpu), PNG/JPEG export"
 
 [lints]
 workspace = true
 
 [dependencies]
-wordcraft-geom = { workspace = true }
-wordcraft-doc = { workspace = true }
-wordcraft-fonts = { workspace = true }
-wordcraft-layout = { workspace = true }
-wordcraft-metafile = { workspace = true }
+tabdocs-geom = { workspace = true }
+tabdocs-doc = { workspace = true }
+tabdocs-fonts = { workspace = true }
+tabdocs-layout = { workspace = true }
 vello_cpu = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }

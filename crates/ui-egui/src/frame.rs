@@ -4,7 +4,7 @@
 //! and anything else with a page rect share it.
 
 use egui::{CursorIcon, Painter, Pos2, Stroke, pos2, vec2};
-use wordcraft_geom::Rect;
+use tabdocs_geom::Rect;
 
 use crate::theme::Tokens;
 

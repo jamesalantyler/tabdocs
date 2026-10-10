@@ -3,11 +3,11 @@
 //! form, inline/display, justification and equation numbers.
 
 use serde_json::{Value, json};
-use wordcraft_doc::math::{Arg, MNode, Math, MathJc, parse_linear, to_linear};
-use wordcraft_doc::math_edit::{self as me, MathPos, TypeStyle};
-use wordcraft_doc::math_latex::{parse_latex, to_latex};
-use wordcraft_doc::para::OBJ;
-use wordcraft_doc::{InlineObject, Pos};
+use tabdocs_doc::math::{Arg, MNode, Math, MathJc, parse_linear, to_linear};
+use tabdocs_doc::math_edit::{self as me, MathPos, TypeStyle};
+use tabdocs_doc::math_latex::{parse_latex, to_latex};
+use tabdocs_doc::para::OBJ;
+use tabdocs_doc::{InlineObject, Pos};
 
 use super::{delete_selection, sel_result, split_para};
 use crate::{CmdError, CmdResult, CommandSpec, MathEdit, Selection, Session, p};
@@ -232,7 +232,7 @@ fn type_text(s: &mut Session, v: &Value) -> CmdResult {
             return;
         }
         for c in text.chars().take(10_000) {
-            let rel = matches!(wordcraft_doc::math::math_class(c), wordcraft_doc::math::MClass::Rel);
+            let rel = matches!(tabdocs_doc::math::math_class(c), tabdocs_doc::math::MClass::Rel);
             if !style.nor && (c == ' ' || c == '\t' || rel) {
                 let mut changed = false;
                 if let Some(p) = me::autocorrect(&mut math.nodes, &pos) {
@@ -433,7 +433,7 @@ fn convert_math(math: &mut Math, professional: bool, latex: bool) {
         }
     } else if !math.linear {
         let text = if latex { to_latex(&math.nodes) } else { to_linear(&math.nodes) };
-        math.nodes = vec![MNode::Run(wordcraft_doc::math::MRun { text, lit: true, ..Default::default() })];
+        math.nodes = vec![MNode::Run(tabdocs_doc::math::MRun { text, lit: true, ..Default::default() })];
         math.linear = true;
     }
 }
@@ -443,8 +443,8 @@ fn convert(s: &mut Session, v: &Value) -> CmdResult {
     let latex = s.math_latex;
     if p::bool(v, "all").unwrap_or(false) {
         let mut n = 0;
-        let stories: Vec<wordcraft_doc::StoryRef> =
-            std::iter::once(wordcraft_doc::StoryRef::Body).chain(s.doc.parts.keys().map(|k| wordcraft_doc::StoryRef::Part(*k))).collect();
+        let stories: Vec<tabdocs_doc::StoryRef> =
+            std::iter::once(tabdocs_doc::StoryRef::Body).chain(s.doc.parts.keys().map(|k| tabdocs_doc::StoryRef::Part(*k))).collect();
         for story in stories {
             for path in s.doc.para_paths(story) {
                 let offs: Vec<usize> = s
@@ -503,11 +503,11 @@ fn number(s: &mut Session, v: &Value) -> CmdResult {
     let at = equation_at_caret(s).ok_or_else(|| CmdError::Disabled("no equation at the caret".into()))?;
     let mut pos_reset = false;
     with_eq(s, &at, |math, display| {
-        let numbered = matches!(math.nodes.as_slice(), [MNode::EqArr { rows }] if rows.iter().any(|r| wordcraft_doc::math::has_number_mark(r)));
+        let numbered = matches!(math.nodes.as_slice(), [MNode::EqArr { rows }] if rows.iter().any(|r| tabdocs_doc::math::has_number_mark(r)));
         let want = p::bool(v, "value").unwrap_or(!numbered);
         if want && !numbered {
             let mut row = std::mem::take(&mut math.nodes);
-            row.push(MNode::Run(wordcraft_doc::math::MRun::new("#")));
+            row.push(MNode::Run(tabdocs_doc::math::MRun::new("#")));
             math.nodes = vec![MNode::EqArr { rows: vec![row] }];
             *display = true;
             pos_reset = true;
@@ -626,7 +626,7 @@ fn gallery(_: &mut Session, _: &Value) -> CmdResult {
 mod tests {
     use super::*;
     use crate::Session;
-    use wordcraft_doc::Document;
+    use tabdocs_doc::Document;
 
     fn session() -> Session {
         let mut s = Session::new(Document::new());

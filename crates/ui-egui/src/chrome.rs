@@ -2,7 +2,7 @@
 
 use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::json;
-use wordcraft_doc::StoryRef;
+use tabdocs_doc::StoryRef;
 
 use crate::theme::{Tokens, TypeRung, medium, paint_text, regular, semibold, text_width};
 use crate::{WordApp, icons};
@@ -63,34 +63,25 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
             let mut right_start = full.max.x;
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                // AutoSave switch: greyed out, with the reason as its tooltip, when AutoSave can't
-                // cover the document (#196, #176); clicking it then offers Save As where that helps.
-                let block = app.autosave_block();
-                let on = app.autosaves();
-                let label = if block.is_some() { t.text_dim.gamma_multiply(0.6) } else { t.text_dim };
-                ui.label(egui::RichText::new(tl!("AutoSave")).font(regular(11.5)).color(label));
+                // AutoSave toggle (on once the document has been saved in this session).
+                let saved_here = app.saved_here();
+                ui.label(egui::RichText::new(tl!("AutoSave")).font(regular(11.5)).color(t.text_dim));
                 let (r, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
-                let (fill, stroke, knob_fill) = match (&block, on) {
-                    (Some(_), _) => (t.input.gamma_multiply(0.5), t.border.gamma_multiply(0.7), t.text_dim.gamma_multiply(0.45)),
-                    (None, true) => (t.accent, t.accent, egui::Color32::WHITE),
-                    (None, false) => (t.input, t.border_strong, t.text_dim),
-                };
-                ui.painter().rect(r, 8.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+                let on = app.autosaves();
+                ui.painter().rect(
+                    r,
+                    8.0,
+                    if on { t.accent } else { t.input },
+                    Stroke::new(1.0, if on { t.accent } else { t.border_strong }),
+                    egui::StrokeKind::Inside,
+                );
                 let knob = if on { r.max.x - 8.0 } else { r.min.x + 8.0 };
-                ui.painter().circle_filled(pos2(knob, r.center().y), 5.0, knob_fill);
-                let tip = block
-                    .as_ref()
-                    .map_or_else(|| tl!("AutoSave saves every change to the file (needs a saved document)").to_string(), |b| b.reason());
-                if resp.on_hover_text(tip).clicked() {
-                    match block {
-                        None => {
-                            let _ = app.run("file.autosave", json!({}));
-                        }
-                        // AutoSave comes on once Save As has saved (maybe on a later frame, #94).
-                        Some(b) if b.save_as_helps() => {
-                            let _ = app.save_as(crate::file_dialogs::AfterSave::AutoSave);
-                        }
-                        Some(b) => app.status(b.reason()),
+                ui.painter().circle_filled(pos2(knob, r.center().y), 5.0, if on { egui::Color32::WHITE } else { t.text_dim });
+                if resp.on_hover_text(tl!("AutoSave saves every change to the file (needs a saved document)")).clicked() {
+                    if saved_here {
+                        app.toggle_autosave();
+                    } else if app.save_as_dialog() {
+                        app.autosave = true;
                     }
                 }
                 ui.add_space(8.0);
@@ -109,32 +100,6 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, initials, semibold(10.5), egui::Color32::WHITE);
                     resp.on_hover_text(format!("{} — set your name in File › Options", app.session.author));
                     ui.add_space(8.0);
-                    if app.ui.show_discord {
-                        let (r, resp) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::click());
-                        ui.painter().rect_filled(
-                            r,
-                            11.0,
-                            if resp.hovered() { egui::Color32::from_rgb(0x47, 0x52, 0xC4) } else { egui::Color32::from_rgb(0x58, 0x65, 0xF2) },
-                        );
-                        icons::paint(
-                            ui.painter(),
-                            Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(14.0, 14.0)),
-                            "discord",
-                            egui::Color32::WHITE,
-                            egui::Color32::WHITE,
-                        );
-                        ui.painter().text(
-                            pos2(r.min.x + 24.0, r.center().y),
-                            Align2::LEFT_CENTER,
-                            tl!("Discord"),
-                            medium(11.5),
-                            egui::Color32::WHITE,
-                        );
-                        if resp.on_hover_text(tl!("Join the ArtCraft community on Discord")).clicked() {
-                            let _ = app.run("ui.discord", json!({}));
-                        }
-                        ui.add_space(8.0);
-                    }
                     // Search ("Tell me").
                     let (r, resp) = ui.allocate_exact_size(vec2(260.0, control_h), Sense::click());
                     ui.painter().rect(r, 6.0, if resp.hovered() { t.input } else { t.ribbon }, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
@@ -227,7 +192,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                 let wtxt = if app.session.sel.is_collapsed() || crate::objects::selected(app).is_some() {
                     crate::i18n::fmt(tl!("{words} words"), &[("words", &words.to_string())])
                 } else {
-                    let sw = wordcraft_doc::count_words(&app.session.selected_text());
+                    let sw = tabdocs_doc::count_words(&app.session.selected_text());
                     crate::i18n::fmt(tl!("{selected} of {words} words"), &[("selected", &sw.to_string()), ("words", &words.to_string())])
                 };
                 if st(ui, &wtxt).clicked() {
@@ -277,8 +242,8 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     let mode = app.session.view.mode;
                     let read = app.session.view.read_mode;
                     for (icon, id, on) in [
-                        ("webLayout", "view.webLayout", mode == wordcraft_layout::ViewMode::Web),
-                        ("printLayout", "view.printLayout", mode == wordcraft_layout::ViewMode::Print && !read),
+                        ("webLayout", "view.webLayout", mode == tabdocs_layout::ViewMode::Web),
+                        ("printLayout", "view.printLayout", mode == tabdocs_layout::ViewMode::Print && !read),
                         ("readMode", "view.readMode", read),
                     ] {
                         let (r, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
@@ -330,6 +295,9 @@ fn small_icon(ui: &mut Ui, icon: &str, tip: &str) -> bool {
 }
 
 impl WordApp {
+    pub fn toggle_autosave(&mut self) {
+        self.autosave = !self.autosave;
+    }
     /// Word count, recomputed only when the document changes.
     pub fn cached_word_count(&mut self) -> usize {
         // The count option changes the count without a document change.
@@ -354,4 +322,127 @@ mod tests {
         // `egui::Margin` is in `i8`.
         assert!(MAC_CONTENT_LEFT <= f32::from(i8::MAX));
     }
+}
+
+/// Browser-style document tabs, positioned above the ribbon. Tabs can be reordered by dragging
+/// their labels; pinned tabs occupy the left group. Long lists scroll horizontally.
+pub fn document_tabs(app: &mut WordApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    egui::Panel::top("document_tabs")
+        .exact_size(35.0)
+        .frame(egui::Frame::NONE.fill(t.tab_strip).inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 2 }))
+        .show(ui, |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("open_document_tabs_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(3.0, 0.0);
+                        let mut hit_rects = Vec::new();
+                        // Snapshot labels: closing/reordering may change indexes during this frame.
+                        for tab in app.document_tabs() {
+                            let fill = if tab.active { t.ribbon } else { t.tab_strip };
+                            let ink = if tab.active { t.text } else { t.text_dim };
+                            egui::Frame::NONE
+                                .fill(fill)
+                                .corner_radius(egui::CornerRadius { nw: 5, ne: 5, sw: 2, se: 2 })
+                                .stroke(Stroke::new(if tab.active { 1.0 } else { 0.5 }, t.border))
+                                .inner_margin(egui::Margin::symmetric(6, 3))
+                                .show(ui, |ui| {
+                                    ui.horizontal_centered(|ui| {
+                                        ui.spacing_mut().item_spacing = vec2(3.0, 0.0);
+                                        let name: String = if tab.name.chars().count() > 26 {
+                                            let shortened: String = tab.name.chars().take(23).collect();
+                                            format!("{shortened}…")
+                                        } else { tab.name.clone() };
+                                        if tab.pinned {
+                                            let (rect, _) = ui.allocate_exact_size(vec2(14.0, 17.0), egui::Sense::hover());
+                                            crate::icons::paint(ui.painter(), rect, "pin", t.icon, t.accent);
+                                        }
+                                        let label = format!("{}{}", name, if tab.dirty { " •" } else { "" });
+                                        let button = egui::Button::new(egui::RichText::new(label).font(regular(11.5)).color(ink))
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(Stroke::NONE)
+                                            .frame(false)
+                                            .sense(egui::Sense::click_and_drag())
+                                            .min_size(vec2(65.0, 23.0));
+                                        let response = ui.add(button)
+                                            .on_hover_text(format!("{} (drag to reorder)", tab.name));
+                                        hit_rects.push((tab.index, response.rect));
+                                        if response.clicked() { app.switch_document_tab(tab.index); }
+                                        if response.drag_started() { app.drag_document_tab = Some(tab.index); }
+                                        response.context_menu(|ui| {
+                                            if ui.button(if tab.pinned { "Unpin tab" } else { "Pin tab" }).clicked() {
+                                                app.pin_document_tab(tab.index, !tab.pinned);
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            if ui.add_enabled(tab.index > 0, egui::Button::new("Move tab left")).clicked() {
+                                                app.reorder_document_tab(tab.index, tab.index - 1);
+                                                ui.close();
+                                            }
+                                            if ui.add_enabled(tab.index + 1 < app.document_tabs().len(), egui::Button::new("Move tab right")).clicked() {
+                                                app.reorder_document_tab(tab.index, tab.index + 1);
+                                                ui.close();
+                                            }
+                                            if let Some(path) = app.document_tab_path(tab.index)
+                                                && ui.button("Copy full path").clicked()
+                                            {
+                                                ui.ctx().copy_text(path);
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            if ui.button("Close tab").clicked() {
+                                                let _ = app.close_document_tab(tab.index);
+                                                ui.close();
+                                            }
+                                            if ui.button("Close other unpinned tabs").clicked() {
+                                                app.close_other_document_tabs(tab.index);
+                                                ui.close();
+                                            }
+                                            if ui.button("Close all tabs").clicked() {
+                                                app.close_all_document_tabs();
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            if ui.button("Reopen closed tab   Ctrl+Shift+T").clicked() {
+                                                let _ = app.reopen_closed_document_tab();
+                                                ui.close();
+                                            }
+                                        });
+                                        if ui.add(egui::Button::new(egui::RichText::new("×").size(15.0).color(t.text_dim))
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(Stroke::NONE)
+                                            .frame(false)
+                                            .min_size(vec2(17.0, 23.0)))
+                                            .on_hover_text(tl!("Close"))
+                                            .clicked()
+                                        {
+                                            let _ = app.close_document_tab(tab.index);
+                                        }
+                                    });
+                                });
+                        }
+                        if ui.add(egui::Button::new(egui::RichText::new("+").size(17.0).color(t.text))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE)
+                            .min_size(vec2(28.0, 24.0)))
+                            .on_hover_text(tl!("New"))
+                            .clicked()
+                        {
+                            let _ = app.run("file.new", json!({}));
+                        }
+                        // Apply a completed drag *after* collecting hit targets for every tab.
+                        if app.drag_document_tab.is_some() && ui.input(|i| i.pointer.any_released()) {
+                            let pos = ui.input(|i| i.pointer.latest_pos());
+                            if let (Some(from), Some(pos)) = (app.drag_document_tab, pos)
+                                && let Some((to, _)) = hit_rects.iter().find(|(_, rect)| rect.contains(pos))
+                            {
+                                app.reorder_document_tab(from, *to);
+                            }
+                            app.drag_document_tab = None;
+                        }
+                    });
+                });
+        });
 }

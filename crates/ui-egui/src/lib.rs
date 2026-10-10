@@ -1,5 +1,5 @@
-//! WordCraft's egui front end: a Word-style window (title bar with Quick Access Toolbar, ribbon,
-//! rulers, page canvas, panes, status bar, Backstage, dialogs) over `wordcraft-engine`.
+//! TabDocs's egui front end: a Word-style window (title bar with Quick Access Toolbar, ribbon,
+//! rulers, page canvas, panes, status bar, Backstage, dialogs) over `tabdocs-engine`.
 //!
 //! The UI is thin: it reads `Session` state and acts through [`WordApp::run`] (command ids), so
 //! the menus, ribbon, shortcuts, control channel and MCP all reach the same behaviour.
@@ -20,7 +20,6 @@ pub mod control;
 pub mod credits;
 pub mod dialogs;
 pub mod equation_tab;
-pub mod file_dialogs;
 pub mod frame;
 pub mod i18n;
 pub mod icons;
@@ -29,11 +28,9 @@ pub mod keytips;
 pub mod mini_toolbar;
 pub mod objects;
 pub mod panes;
-pub mod paste_picture;
 pub mod previews;
 pub mod read_aloud;
 pub mod ribbon;
-pub mod scroll;
 pub mod theme;
 pub mod widgets;
 pub mod window_geometry;
@@ -41,10 +38,9 @@ pub mod zotero;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use wordcraft_engine::Session;
+use tabdocs_engine::Session;
 
 pub use control::ControlRequest;
-pub use file_dialogs::FileDialogRequest;
 
 /// Platform services injected by the host (file dialogs, file I/O).
 #[derive(Default)]
@@ -53,11 +49,6 @@ pub struct Services {
     pub pick_open: Option<Box<dyn Fn(&str) -> Option<String>>>,
     /// Pick a path to save to, given a suggested name.
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
-    /// Desktop: show a native file dialog without blocking the UI thread (#94); used instead of
-    /// `pick_open` / `pick_save` when set. The host sends the picked path (`None` when cancelled)
-    /// through the returned channel once the user answers, and wakes the UI; a dropped sender
-    /// counts as cancelled. The app shows one dialog at a time ([`file_dialogs`]).
-    pub file_dialog: Option<Box<dyn Fn(FileDialogRequest) -> std::sync::mpsc::Receiver<Option<String>>>>,
     /// Web: open a file picker; the file arrives later through `inbox`.
     pub open_async: Option<Box<dyn Fn(&str)>>,
     /// Web: files (name, bytes) delivered asynchronously (picker, drag and drop).
@@ -68,13 +59,9 @@ pub struct Services {
     /// Web: told whether the document has unsaved changes after each pass, for the browser's
     /// leave-page guard (`beforeunload` runs between frames and can't ask the app).
     pub on_dirty: Option<Box<dyn Fn(bool)>>,
-    /// Hand PDF bytes to the system's print flow. Web: the browser's print dialog on that PDF (no
-    /// download, no intermediate file). Desktop: the PDF opens in the system's viewer (a temporary
-    /// file), where the user prints (#15). An error means nothing was opened.
+    /// Web: hand PDF bytes to the browser's print flow directly (no download, no intermediate
+    /// file) — opens the system print dialog on that PDF. An error means no dialog was opened.
     pub print: Option<Box<dyn Fn(&[u8]) -> Result<(), String>>>,
-    /// Desktop: the picture on the system clipboard, if any — egui's paste only carries text
-    /// (#45). Read when Paste finds no text; see [`paste_picture`].
-    pub clipboard_picture: Option<Box<dyn Fn() -> Option<paste_picture::ClipboardPicture>>>,
 }
 
 /// Files delivered asynchronously.
@@ -103,19 +90,33 @@ pub struct UiState {
     /// Interface language: `auto` (follow the system) or a code from [`i18n::LANGUAGES`].
     pub language: String,
     /// Editing preferences; the session owns them while running (see [`WordApp::prefs`]).
-    pub editing: wordcraft_engine::Prefs,
+    pub editing: tabdocs_engine::Prefs,
     /// Read Aloud speed (1 = normal) and whether it skips citations and bibliographies.
     pub read_aloud_rate: f32,
     pub read_aloud_skip_citations: bool,
     /// Keytips (Alt) state; not persisted, it resets each session.
     #[serde(skip)]
     pub keytips: crate::keytips::Phase,
-    /// Since the last Alt press, another key or a mouse button was pressed: the Alt release
-    /// that follows ends a chord (Alt+click, Alt+drag column selection), not a keytip tap.
-    #[serde(skip)]
-    pub alt_chord_used: bool,
     /// View › Switch Modes: show pages dark (white text on black), kept between runs.
     pub dark_page: bool,
+    /// Saved tab order and active document (paths reopened from disk on next desktop launch).
+    pub workspace: WorkspaceState,
+}
+
+/// Only paths and empty placeholders are persisted: document contents are never written to
+/// preferences, so unsaved edits are handled by the existing Save Changes dialog on exit.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceState {
+    pub tabs: Vec<WorkspaceTab>,
+    pub active: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceTab {
+    pub path: Option<String>,
+    pub pinned: bool,
 }
 
 impl Default for UiState {
@@ -129,23 +130,90 @@ impl Default for UiState {
             theme: theme::Appearance::default(),
             legacy_dark: None,
             nav_tab: "headings".into(),
-            show_discord: true,
+            show_discord: false,
             author: String::new(),
             window: None,
             language: i18n::AUTO.into(),
-            editing: wordcraft_engine::Prefs::default(),
+            editing: tabdocs_engine::Prefs::default(),
             read_aloud_rate: 1.0,
             read_aloud_skip_citations: true,
             keytips: crate::keytips::Phase::Off,
-            alt_chord_used: false,
             dark_page: false,
+            workspace: WorkspaceState::default(),
         }
     }
+}
+
+/// A document that is not currently selected. Its edit and view state are retained intact,
+/// including undo history, page caches and AutoSave permissions. The selected document lives
+/// in `WordApp` for compatibility with the existing ribbon, canvas and MCP integrations.
+struct DocumentTab {
+    session: Session,
+    canvas: canvas::CanvasState,
+    autosave_path: Option<std::path::PathBuf>,
+    last_autosave: f64,
+    word_count: (u64, usize),
+    read_aloud_at: Option<tabdocs_engine::doc::Pos>,
+    read_aloud_error: Option<String>,
+    change_picture_target: Option<String>,
+    equation_prev_tab: Option<String>,
+}
+
+impl DocumentTab {
+    fn new(session: Session) -> Self {
+        Self {
+            session,
+            canvas: canvas::CanvasState::default(),
+            autosave_path: None,
+            last_autosave: 0.0,
+            word_count: (0, 0),
+            read_aloud_at: None,
+            read_aloud_error: None,
+            change_picture_target: None,
+            equation_prev_tab: None,
+        }
+    }
+}
+
+/// A tab's public label, used by the tab strip and the document-list command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentTabInfo {
+    pub index: usize,
+    pub name: String,
+    pub dirty: bool,
+    pub active: bool,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ClosedDocument {
+    path: String,
+    index: usize,
+    pinned: bool,
 }
 
 /// The application.
 pub struct WordApp {
     pub session: Session,
+    /// Exactly one slot (the active one) is `None`; all other slots hold full document state.
+    tabs: Vec<Option<DocumentTab>>,
+    /// Stable identity for each tab (unlike its re-orderable display index).
+    tab_ids: Vec<u64>,
+    pinned_tabs: Vec<bool>,
+    recently_closed: Vec<ClosedDocument>,
+    /// Stable IDs queued for Close Others / Close All, so earlier closes cannot shift indexes.
+    pending_closes: Vec<u64>,
+    pending_keep_tab: Option<u64>,
+    /// For window close, inspect every dirty tab without removing it from the saved workspace.
+    quit_reviewed: Vec<u64>,
+    quit_original_tab: Option<u64>,
+    /// Drag source index is stable until pointer release; tab reordering occurs after painting.
+    pub(crate) drag_document_tab: Option<usize>,
+    next_tab_id: u64,
+    active_tab: usize,
+    closing_all: bool,
+    /// Explicit Close / Close All should not restore documents at the next launch.
+    suppress_workspace_on_exit: bool,
     pub ui: UiState,
     pub services: Services,
     pub canvas: canvas::CanvasState,
@@ -154,9 +222,6 @@ pub struct WordApp {
     pub previews: previews::Previews,
     /// Media key of the picture a pending Change Picture replaces (#147).
     pub change_picture_target: Option<String>,
-    /// Web: a recipient list was asked for (Select Recipients › Use an Existing List…), so the
-    /// next text file from the picker loads as recipients instead of opening (#240).
-    pub recipient_list_pending: bool,
     /// macOS: the window has no title bar; leave room for the traffic lights.
     pub integrated_titlebar: bool,
     control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
@@ -169,11 +234,6 @@ pub struct WordApp {
     styled: bool,
     /// The CJK face order the installed UI fonts use (Chinese first, or Japanese first).
     fonts_hans: bool,
-    /// Whether the installed UI fonts include an installed CJK fallback font (#241).
-    fonts_system_cjk: bool,
-    /// CJK text is (about to be) on screen in a non-CJK interface, e.g. the language names in
-    /// File ▸ Options: load the installed CJK fallback font if no embedded face covers it.
-    pub(crate) want_system_cjk: bool,
     fonts_frames: u32,
     applied_dark: Option<bool>,
     pub frame_ms: f64,
@@ -190,18 +250,12 @@ pub struct WordApp {
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
     /// Read Aloud: the start of the sentence the caret was last moved to, and the last error shown.
-    pub(crate) read_aloud_at: Option<wordcraft_engine::doc::Pos>,
+    pub(crate) read_aloud_at: Option<tabdocs_engine::doc::Pos>,
     pub(crate) read_aloud_error: Option<String>,
     /// The file the document was last explicitly saved to in this session; AutoSave writes only
     /// there. A file that was merely opened isn't rewritten until the user saves it: saving drops
-    /// whatever WordCraft can't represent (content controls, charts, macros…).
+    /// whatever TabDocs can't represent (content controls, charts, macros…).
     autosave_path: Option<std::path::PathBuf>,
-    /// The file dialog the host is showing, and what its answer is for ([`file_dialogs`]).
-    file_dialog: Option<file_dialogs::PendingDialog>,
-    /// File › Info: the property field being typed in and the document revision after its last
-    /// keystroke, so one visit's keystrokes make a single undo step (and anything else in
-    /// between, such as an Undo, starts a new one).
-    pub(crate) info_editing: Option<(&'static str, u64)>,
 }
 
 /// The answer to "Do you want to save changes?" (`ui.saveChanges`).
@@ -227,6 +281,19 @@ impl WordApp {
     pub fn new(session: Session, services: Services) -> Self {
         WordApp {
             session,
+            tabs: vec![None],
+            tab_ids: vec![1],
+            pinned_tabs: vec![false],
+            recently_closed: Vec::new(),
+            pending_closes: Vec::new(),
+            pending_keep_tab: None,
+            quit_reviewed: Vec::new(),
+            quit_original_tab: None,
+            drag_document_tab: None,
+            next_tab_id: 2,
+            active_tab: 0,
+            closing_all: false,
+            suppress_workspace_on_exit: false,
             ui: UiState::default(),
             services,
             canvas: canvas::CanvasState::default(),
@@ -242,8 +309,6 @@ impl WordApp {
             keytip_rects: Vec::new(),
             styled: false,
             fonts_hans: false,
-            fonts_system_cjk: false,
-            want_system_cjk: false,
             fonts_frames: 0,
             applied_dark: None,
             frame_ms: 0.0,
@@ -259,10 +324,337 @@ impl WordApp {
             read_aloud_error: None,
             autosave_path: None,
             change_picture_target: None,
-            recipient_list_pending: false,
-            file_dialog: None,
-            info_editing: None,
         }
+    }
+
+    /// List all open documents, in display order.
+    pub fn document_tabs(&self) -> Vec<DocumentTabInfo> {
+        self.tabs.iter().enumerate().map(|(index, slot)| {
+            let session = slot.as_ref().map_or(&self.session, |t| &t.session);
+            let name = session.path.as_ref().and_then(|p| p.file_name()).map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| if session.doc.core.title.is_empty() {
+                    format!("Document {}", self.tab_ids.get(index).copied().unwrap_or(1))
+                } else { session.doc.core.title.clone() });
+            DocumentTabInfo { index, name, dirty: session.dirty, active: index == self.active_tab, pinned: self.pinned_tabs[index] }
+        }).collect()
+    }
+
+    pub fn active_document_tab(&self) -> usize {
+        self.active_tab
+    }
+
+    pub fn document_tab_path(&self, index: usize) -> Option<String> {
+        if index >= self.tabs.len() { return None; }
+        let session = self.tabs[index].as_ref().map_or(&self.session, |t| &t.session);
+        session.path.as_ref().map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// Stable ID for egui state such as a document's last scroll offset.
+    pub(crate) fn active_document_id(&self) -> u64 {
+        self.tab_ids.get(self.active_tab).copied().unwrap_or(0)
+    }
+
+    pub fn switch_document_tab(&mut self, index: usize) -> bool {
+        if index == self.active_tab {
+            return true;
+        }
+        if matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
+            return false;
+        }
+        let Some(next) = self.tabs.get_mut(index).and_then(Option::take) else { return false };
+        // Swap the entire session and editor state, never copying a document or its undo stack.
+        let previous = DocumentTab {
+            session: std::mem::replace(&mut self.session, next.session),
+            canvas: std::mem::replace(&mut self.canvas, next.canvas),
+            autosave_path: std::mem::replace(&mut self.autosave_path, next.autosave_path),
+            last_autosave: std::mem::replace(&mut self.last_autosave, next.last_autosave),
+            word_count: std::mem::replace(&mut self.word_count, next.word_count),
+            read_aloud_at: std::mem::replace(&mut self.read_aloud_at, next.read_aloud_at),
+            read_aloud_error: std::mem::replace(&mut self.read_aloud_error, next.read_aloud_error),
+            change_picture_target: std::mem::replace(&mut self.change_picture_target, next.change_picture_target),
+            equation_prev_tab: std::mem::replace(&mut self.equation_prev_tab, next.equation_prev_tab),
+        };
+        self.tabs[self.active_tab] = Some(previous);
+        self.active_tab = index;
+        self.dialog = None;
+        self.ui.backstage = false;
+        self.canvas.want_focus = true;
+        self.status_msg = None;
+        self.applied_dark = None; // page-specific dark mode
+        self.previews = previews::Previews::default(); // style previews belong to the document
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint();
+        }
+        true
+    }
+
+    /// Close a tab by its displayed index. Unsaved work asks before the tab is removed.
+    pub fn close_document_tab(&mut self, index: usize) -> Result<Value, String> {
+        if !self.switch_document_tab(index) {
+            return Err("unable to select that document while a save prompt is open".into());
+        }
+        self.run("file.close", json!({}))
+    }
+
+    /// Toggle pinning; pinned documents form an ordered group at the left edge.
+    pub fn pin_document_tab(&mut self, index: usize, pinned: bool) -> bool {
+        if index >= self.tabs.len() { return false; }
+        if self.pinned_tabs[index] == pinned { return true; }
+        let other_pins = self.pinned_tabs.iter().filter(|&&p| p).count();
+        let destination = if pinned { other_pins } else { other_pins - 1 };
+        self.pinned_tabs[index] = pinned;
+        self.move_document_tab_unchecked(index, destination)
+    }
+
+    /// Queue a close operation that respects each tab's Save Changes prompt.
+    pub fn close_other_document_tabs(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() || self.dialog.is_some() { return false; }
+        self.pending_keep_tab = Some(self.tab_ids[index]);
+        self.pending_closes = self.tab_ids.iter().enumerate()
+            .filter(|(i, _)| *i != index && !self.pinned_tabs[*i])
+            .map(|(_, id)| *id).rev().collect();
+        self.continue_pending_closes();
+        true
+    }
+
+    /// Close every tab, including pinned tabs. The last close exits TabDocs.
+    pub fn close_all_document_tabs(&mut self) -> bool {
+        if self.dialog.is_some() { return false; }
+        self.pending_keep_tab = None;
+        self.pending_closes = self.tab_ids.iter().copied().rev().collect();
+        self.continue_pending_closes();
+        true
+    }
+
+    fn continue_pending_closes(&mut self) {
+        if self.dialog.is_some() || self.closing_all || self.quit_requested { return; }
+        while let Some(id) = self.pending_closes.pop() {
+            if let Some(index) = self.tab_ids.iter().position(|t| *t == id) {
+                let _ = self.close_document_tab(index);
+                return;
+            }
+        }
+        if let Some(id) = self.pending_keep_tab.take()
+            && let Some(index) = self.tab_ids.iter().position(|t| *t == id)
+        {
+            self.switch_document_tab(index);
+        }
+    }
+
+    /// Reopen the last closed file from disk, not discarded unsaved edits.
+    pub fn reopen_closed_document_tab(&mut self) -> Result<Value, String> {
+        let Some(closed) = self.recently_closed.last().cloned() else {
+            return Err("there is no previously closed saved document".into());
+        };
+        let path = closed.path.clone();
+        // A failed reopen must remain on the history stack for a future retry.
+        let result = self.add_document_tab("file.open", &json!({"path": path}))?;
+        self.recently_closed.pop();
+        if result.get("alreadyOpen").and_then(Value::as_bool) == Some(true) { return Ok(result); }
+        let from = self.active_tab;
+        // Pin first, then reorder within the same group so pinned tabs stay to the left.
+        self.pin_document_tab(from, closed.pinned);
+        let from = self.active_tab;
+        let pin_count = self.pinned_tabs.iter().filter(|&&p| p).count();
+        let min = if closed.pinned { 0 } else { pin_count };
+        let max = if closed.pinned { pin_count.saturating_sub(1) } else { self.tabs.len() - 1 };
+        self.reorder_document_tab(from, closed.index.clamp(min, max));
+        Ok(result)
+    }
+
+    /// Move an existing tab to another position without affecting any document state.
+    pub fn reorder_document_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() || to >= self.tabs.len() { return false; }
+        if from == to { return true; }
+        // Only move within the pinned or unpinned group; use pin_document_tab to cross it.
+        if self.pinned_tabs[from] != self.pinned_tabs[to] { return false; }
+        self.move_document_tab_unchecked(from, to)
+    }
+
+    fn move_document_tab_unchecked(&mut self, from: usize, to: usize) -> bool {
+        if from == to { return true; }
+        let slot = self.tabs.remove(from);
+        self.tabs.insert(to, slot);
+        let id = self.tab_ids.remove(from);
+        self.tab_ids.insert(to, id);
+        let pin = self.pinned_tabs.remove(from);
+        self.pinned_tabs.insert(to, pin);
+        if self.active_tab == from {
+            self.active_tab = to;
+        } else if from < self.active_tab && to >= self.active_tab {
+            self.active_tab -= 1;
+        } else if from > self.active_tab && to <= self.active_tab {
+            self.active_tab += 1;
+        }
+        true
+    }
+
+    fn add_document_tab(&mut self, id: &str, params: &Value) -> Result<Value, String> {
+        // Never put two independent edit sessions on the same file. Re-open selects its tab.
+        if id == "file.open"
+            && let Some(path) = params.get("path").and_then(Value::as_str)
+            && params.get("data").is_none()
+        {
+            let sought = std::fs::canonicalize(path).ok();
+            let found = self.document_tabs().into_iter().find(|tab| {
+                let session = self.tabs[tab.index].as_ref().map_or(&self.session, |t| &t.session);
+                session.path.as_ref().is_some_and(|p| {
+                    p.as_path() == std::path::Path::new(path) ||
+                    (sought.is_some() && std::fs::canonicalize(p).ok() == sought)
+                })
+            });
+            if let Some(tab) = found {
+                self.switch_document_tab(tab.index);
+                return Ok(json!({"path": path, "tab": tab.index, "alreadyOpen": true}));
+            }
+        }
+        let mut session = Session::new(tabdocs_doc::Document::new());
+        session.author = self.session.author.clone();
+        session.prefs = self.session.prefs.clone();
+        session.view = self.session.view.clone();
+        // Parse and load before switching: failed file opens must leave all existing tabs intact.
+        let result = session.run(id, params).map_err(|e| e.to_string())?;
+        // Agent commands can supersede a pending prompt; never strand the new tab behind it.
+        if matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
+            self.dialog = None;
+            self.closing_all = false;
+            self.quit_reviewed.clear();
+            self.quit_original_tab = None;
+            self.pending_closes.clear();
+            self.pending_keep_tab = None;
+        }
+        self.tabs.push(Some(DocumentTab::new(session)));
+        self.tab_ids.push(self.next_tab_id);
+        self.pinned_tabs.push(false);
+        self.next_tab_id = self.next_tab_id.wrapping_add(1);
+        let index = self.tabs.len() - 1;
+        self.switch_document_tab(index);
+        self.after_command(id);
+        Ok(result)
+    }
+
+    fn close_active_tab_now(&mut self) -> Result<Value, String> {
+        if self.tabs.len() == 1 {
+            self.suppress_workspace_on_exit = true;
+            self.quit_requested = true;
+            return Ok(json!({"closing": true}));
+        }
+        if let Some(path) = self.session.path.as_ref() {
+            // Reopening loads the saved file. Explicitly discarded edits are not recoverable.
+            self.recently_closed.push(ClosedDocument {
+                path: path.to_string_lossy().into_owned(),
+                index: self.active_tab,
+                pinned: self.pinned_tabs[self.active_tab],
+            });
+            if self.recently_closed.len() > 20 { self.recently_closed.remove(0); }
+        }
+        self.tabs.remove(self.active_tab);
+        self.tab_ids.remove(self.active_tab);
+        self.pinned_tabs.remove(self.active_tab);
+        let index = self.active_tab.min(self.tabs.len() - 1);
+        let Some(next) = self.tabs[index].take() else {
+            return Err("document tabs are in an invalid state".into());
+        };
+        self.session = next.session;
+        self.canvas = next.canvas;
+        self.autosave_path = next.autosave_path;
+        self.last_autosave = next.last_autosave;
+        self.word_count = next.word_count;
+        self.read_aloud_at = next.read_aloud_at;
+        self.read_aloud_error = next.read_aloud_error;
+        self.change_picture_target = next.change_picture_target;
+        self.equation_prev_tab = next.equation_prev_tab;
+        self.active_tab = index;
+        self.dialog = None;
+        self.status_msg = None;
+        self.previews = previews::Previews::default();
+        self.applied_dark = None;
+        self.canvas.want_focus = true;
+        if let Some(ctx) = &self.ctx { ctx.request_repaint(); }
+        Ok(json!({"closed": true, "activeTab": index}))
+    }
+
+    fn any_dirty_documents(&self) -> bool {
+        self.session.dirty || self.tabs.iter().flatten().any(|t| t.session.dirty)
+    }
+
+    /// Review the dirty tabs without disposing of sessions: the full workspace must still
+    /// exist when `on_exit` serializes preferences, including files saved during these prompts.
+    fn continue_close_all(&mut self) {
+        if !self.closing_all { return; }
+        if let Some(index) = self.tab_ids.iter().enumerate().find_map(|(i, id)| {
+            let dirty = self.tabs[i].as_ref().map_or(self.session.dirty, |t| t.session.dirty);
+            (dirty && !self.quit_reviewed.contains(id)).then_some(i)
+        }) {
+            if index != self.active_tab && !self.switch_document_tab(index) { return; }
+            let name = self.session.path.as_ref().and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.title_stem());
+            self.dialog = Some(dialogs::Dialog::SaveChanges {
+                name, then: "ui.confirmQuitTab".into(), params: json!({}),
+                document: self.session.document_id(),
+            });
+        } else {
+            // Prompting may have selected several dirty documents. Restore the user's
+            // selected document before persisting the workspace on exit.
+            if let Some(id) = self.quit_original_tab
+                && let Some(index) = self.tab_ids.iter().position(|&candidate| candidate == id)
+            {
+                self.switch_document_tab(index);
+            }
+            self.quit_requested = true;
+        }
+    }
+
+    /// Capture tab order, paths and pinning. Empty tabs reopen blank (never resurrect unsaved text).
+    pub fn workspace_snapshot(&self) -> WorkspaceState {
+        WorkspaceState {
+            tabs: self.tabs.iter().enumerate().map(|(i, slot)| {
+                let session = slot.as_ref().map_or(&self.session, |t| &t.session);
+                WorkspaceTab {
+                    path: session.path.as_ref().map(|p| std::fs::canonicalize(p)
+                        .unwrap_or_else(|_| p.clone()).to_string_lossy().into_owned()),
+                    pinned: self.pinned_tabs[i],
+                }
+            }).collect(),
+            active: self.active_tab,
+        }
+    }
+
+    /// Called after preferences load, only for desktop launches without explicit files or --sample.
+    /// Missing or unreadable documents are skipped; the initial blank stays if nothing opens.
+    pub fn restore_workspace(&mut self) -> usize {
+        let saved = self.ui.workspace.clone();
+        if saved.tabs.is_empty() || self.services.download.is_some() { return 0; }
+        let mut count = 0;
+        let mut active_id = None;
+        for (i, tab) in saved.tabs.iter().enumerate() {
+            let result = match &tab.path {
+                Some(path) => self.add_document_tab("file.open", &json!({"path": path})),
+                None => self.add_document_tab("file.new", &json!({})),
+            };
+            match result {
+                Ok(value) if value.get("alreadyOpen").and_then(Value::as_bool) == Some(true) => {
+                    if saved.active == i { active_id = Some(self.active_document_id()); }
+                }
+                Ok(_) => {
+                    if count == 0 {
+                        // The initial empty document is a placeholder, not part of the saved workspace.
+                        let _ = self.close_document_tab(0);
+                    }
+                    count += 1;
+                    let index = self.active_tab;
+                    self.pin_document_tab(index, tab.pinned);
+                    if saved.active == i { active_id = Some(self.active_document_id()); }
+                }
+                Err(error) => log::warn!("could not restore document tab: {error}"),
+            }
+        }
+        if count > 0 {
+            let target = active_id.and_then(|id| self.tab_ids.iter().position(|candidate| *candidate == id))
+                .unwrap_or_else(|| saved.active.min(self.tabs.len() - 1));
+            self.switch_document_tab(target);
+        }
+        count
     }
 
     pub fn with_control(mut self, rx: std::sync::mpsc::Receiver<ControlRequest>) -> Self {
@@ -279,6 +671,11 @@ impl WordApp {
         ui.read_aloud_rate = self.session.read_aloud.rate();
         ui.read_aloud_skip_citations = self.session.read_aloud.skip_citations;
         ui.dark_page = self.session.view.dark_mode;
+        ui.workspace = if self.suppress_workspace_on_exit {
+            WorkspaceState::default()
+        } else {
+            self.workspace_snapshot()
+        };
         ui
     }
 
@@ -301,39 +698,16 @@ impl WordApp {
         self.session.view.dark_mode = self.ui.dark_page;
     }
 
-    /// Run a command the user asked for (ribbon, shortcut, Backstage, file drop). New, Open,
-    /// Close, Envelopes, Labels and Finish & Merge on a document with unsaved changes first ask
-    /// Save / Don't Save / Cancel, and the command runs once that is answered (`ui.saveChanges`).
+    /// Run a user command. New and Open create/select tabs without discarding edits; Close,
+    /// Envelopes, Labels and Finish & Merge still ask before discarding a dirty document.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        // A button whose command needs input the user hasn't given yet opens its dialog (#240).
-        if let Some(name) = input_dialog(id, &params)
-            && widgets::enabled(self, id)
-        {
-            self.dialog = dialogs::Dialog::open(name, self);
-            return Ok(json!({"pending": name}));
-        }
         if self.session.dirty && discards_document(id, &params) {
             let name =
                 self.session.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.title_stem());
             self.dialog = Some(dialogs::Dialog::SaveChanges { name, then: id.to_string(), params, document: self.session.document_id() });
             return Ok(json!({"pending": "saveChanges"}));
         }
-        // Paste without system clipboard text: a picture there is newer than our own copy (copying
-        // here replaces it with text), so it wins (#45).
-        if id == "edit.paste"
-            && params.get("text").is_none()
-            && let Some(r) = paste_picture::paste(self)
-        {
-            return r;
-        }
-        let r = self.execute(id, params);
-        // Match Fields and Check for Errors show what they found.
-        if let Ok(v) = &r
-            && let Some(d) = dialogs::Dialog::report(id, v)
-        {
-            self.dialog = Some(d);
-        }
-        r
+        self.execute(id, params)
     }
 
     /// Run a command for a script or an agent (control channel, MCP bridge): never asks first.
@@ -343,14 +717,24 @@ impl WordApp {
         if !matches!(id, "ui.changePicture" | "picture.change" | "insert.picture") {
             self.change_picture_target = None;
         }
-        if !matches!(id, "ui.openRecipientList" | "mailings.recipients") {
-            self.recipient_list_pending = false;
+        if id == "file.new" || (id == "file.open" && params.get("path").is_some()) {
+            let result = self.add_document_tab(id, &params);
+            if let Err(error) = &result { self.status(error.clone()); }
+            return result;
+        }
+        if id == "file.close" {
+            let result = self.close_active_tab_now();
+            if result.is_ok() && !self.quit_requested { self.continue_pending_closes(); }
+            return result;
+        }
+        if id == "ui.confirmQuitTab" {
+            let id = self.active_document_id();
+            if !self.quit_reviewed.contains(&id) { self.quit_reviewed.push(id); }
+            self.continue_close_all();
+            return Ok(json!({"quit": self.quit_requested}));
         }
         if let Some(r) = self.ui_command(id, &params) {
             return r;
-        }
-        if id == "file.autosave" {
-            return self.set_autosave(&params);
         }
         let ctx = self.ctx.clone();
         if let Some(r) = zotero::command(self, id, &params, ctx.as_ref()) {
@@ -359,15 +743,25 @@ impl WordApp {
             }
             return r;
         }
+        // Prevent Save As from turning two tabs into independent writers of the same file.
+        if self.services.download.is_none()
+            && matches!(id, "file.save" | "file.saveAs")
+            && let Some(path) = params.get("path").and_then(Value::as_str)
+        {
+            let wanted = std::fs::canonicalize(path).ok();
+            let conflict = self.tabs.iter().flatten().filter_map(|t| t.session.path.as_ref()).any(|other| {
+                other.as_path() == std::path::Path::new(path) ||
+                (wanted.is_some() && std::fs::canonicalize(other).ok() == wanted)
+            });
+            if conflict {
+                return Err("that file is already open in another tab; choose another name".into());
+            }
+        }
         // Web: saving and exporting become downloads.
         if self.services.download.is_some() && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng") {
             let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.default_save_name());
             let name = if id == "file.exportPdf" && !name.ends_with(".pdf") { format!("{name}.pdf") } else { name };
-            // A save is a save, download or not: advance the revision and modified stamp (#262).
-            if matches!(id, "file.save" | "file.saveAs") {
-                self.session.stamp_save();
-            }
-            let bytes = wordcraft_engine::io::save_bytes(&name, &self.session.doc)?;
+            let bytes = tabdocs_engine::io::save_bytes(&name, &self.session.doc)?;
             if let Some(d) = &self.services.download
                 && let Err(e) = d(&name, &bytes)
             {
@@ -420,18 +814,14 @@ impl WordApp {
         let go = match choice {
             SaveChoice::Cancel => false,
             SaveChoice::DontSave => true,
-            // A new document: ask where through Save As; the command runs once that has saved,
-            // which with the desktop's non-blocking dialog is on a later frame (#94).
-            SaveChoice::Save if self.session.path.is_none() && self.services.download.is_none() => {
-                return match self.save_as(file_dialogs::AfterSave::Continue { then, params, document }) {
-                    file_dialogs::Asked::Done(r) => r,
-                    file_dialogs::Asked::Pending => Ok(json!({"pending": "saveAs"})),
-                    file_dialogs::Asked::Busy => Ok(json!({"done": false})),
-                };
-            }
             SaveChoice::Save => self.save_for_prompt(),
         };
         if !go {
+            self.closing_all = false;
+            self.quit_reviewed.clear();
+            self.quit_original_tab = None;
+            self.pending_closes.clear();
+            self.pending_keep_tab = None;
             return Ok(json!({"done": false}));
         }
         self.execute(&then, params).map(|r| json!({"done": true, "result": r}))
@@ -442,15 +832,14 @@ impl WordApp {
     /// image, plain text) writes a copy and leaves the document unsaved, so it doesn't count:
     /// the command is cancelled and the document stays.
     fn save_for_prompt(&mut self) -> bool {
-        let saved = match self.execute("file.save", json!({})) {
-            Ok(v) => v.get("saved").and_then(Value::as_bool) == Some(true) || v.get("downloaded").is_some(),
-            Err(_) => false,
+        let saved = if self.session.path.is_none() && self.services.download.is_none() {
+            self.save_as_dialog()
+        } else {
+            match self.execute("file.save", json!({})) {
+                Ok(v) => v.get("saved").and_then(Value::as_bool) == Some(true) || v.get("downloaded").is_some(),
+                Err(_) => false,
+            }
         };
-        self.safely_saved(saved)
-    }
-
-    /// Whether a save before New/Open/Close counts: it happened, and kept everything.
-    fn safely_saved(&mut self, saved: bool) -> bool {
         if saved && self.session.dirty {
             self.status(tl!("That format doesn't keep everything, so the document is still open. Save it as a Word document (.docx) to go on."));
             return false;
@@ -458,13 +847,19 @@ impl WordApp {
         saved
     }
 
-    /// The window's close button (or the system) asked to quit. Returns true to let the window
-    /// close; with unsaved changes it asks first and returns false.
+    /// The window's close button (or the system) asked to quit. Checks all document tabs and
+    /// asks about each dirty document before allowing the window to close.
     pub fn close_requested(&mut self) -> bool {
-        if self.quit_requested || !self.session.dirty {
+        if self.quit_requested || !self.any_dirty_documents() {
             return true;
         }
-        let _ = self.run("file.close", json!({}));
+        // The system may repeat close requests while a modal Save Changes prompt is open.
+        if !self.closing_all {
+            self.closing_all = true;
+            self.quit_original_tab = Some(self.active_document_id());
+            self.quit_reviewed.clear();
+            self.continue_close_all();
+        }
         false
     }
 
@@ -506,12 +901,13 @@ impl WordApp {
                     self.ui.backstage = true;
                     self.ui.backstage_page = "options".into();
                 }
-                "pasteSpecial" => self.dialog = Some(dialogs::Dialog::paste_special(self, req)),
                 other => self.dialog = dialogs::Dialog::open(other, self),
             }
         }
         if req.get("close").is_some() {
-            self.quit_requested = true;
+            // File > Exit must use the same multi-document Save Changes review as the
+            // window close button; forcing quit_requested would discard unsaved edits.
+            if self.close_requested() { self.quit_requested = true; }
         }
     }
 
@@ -591,6 +987,50 @@ impl WordApp {
                 let lang = i18n::Lang::from_pref(&self.ui.language);
                 json!({"language": self.ui.language, "effective": lang.code(), "available": i18n::Lang::all().map(|l| json!({"code": l.code(), "name": l.name()})).collect::<Vec<_>>()})
             }
+            "ui.documentTabs" => {
+                json!({"active": self.active_tab, "tabs": self.document_tabs().iter().map(|t| json!({
+                    "index": t.index, "name": t.name, "dirty": t.dirty, "active": t.active, "pinned": t.pinned,
+                })).collect::<Vec<_>>()})
+            }
+            "ui.switchDocument" => {
+                let Some(index) = p.get("index").and_then(Value::as_u64) else {
+                    return Some(Err("`index` must be a nonnegative integer".into()));
+                };
+                if !self.switch_document_tab(index as usize) {
+                    return Some(Err("unable to switch document tab".into()));
+                }
+                json!({"active": self.active_tab})
+            }
+            "ui.closeDocument" => {
+                let Some(index) = p.get("index").and_then(Value::as_u64) else {
+                    return Some(Err("`index` must be a nonnegative integer".into()));
+                };
+                return Some(self.close_document_tab(index as usize));
+            }
+            "ui.reopenClosedDocument" => return Some(self.reopen_closed_document_tab()),
+            "ui.closeOtherDocuments" => {
+                let Some(index) = p.get("index").and_then(Value::as_u64) else { return Some(Err("missing `index`".into())); };
+                if !self.close_other_document_tabs(index as usize) { return Some(Err("cannot close other tabs".into())); }
+                json!({"pending": !self.pending_closes.is_empty()})
+            }
+            "ui.closeAllDocuments" => {
+                if !self.close_all_document_tabs() { return Some(Err("cannot close tabs".into())); }
+                json!({"pending": !self.pending_closes.is_empty()})
+            }
+            "ui.pinDocument" => {
+                let Some(index) = p.get("index").and_then(Value::as_u64) else { return Some(Err("missing `index`".into())); };
+                let Some(pinned) = p.get("pinned").and_then(Value::as_bool) else { return Some(Err("missing `pinned`".into())); };
+                if !self.pin_document_tab(index as usize, pinned) { return Some(Err("unable to pin tab".into())); }
+                json!({"active": self.active_tab})
+            }
+            "ui.moveDocument" => {
+                let Some(from) = p.get("from").and_then(Value::as_u64) else { return Some(Err("missing `from` index".into())); };
+                let Some(to) = p.get("to").and_then(Value::as_u64) else { return Some(Err("missing `to` index".into())); };
+                if !self.reorder_document_tab(from as usize, to as usize) {
+                    return Some(Err("unable to reorder tabs".into()));
+                }
+                json!({"active": self.active_tab})
+            }
             "ui.saveChanges" => {
                 let Some(choice) = s("answer").and_then(SaveChoice::parse) else {
                     return Some(Err("`answer` must be save, dontSave or cancel".into()));
@@ -601,31 +1041,21 @@ impl WordApp {
                 self.open_dialog();
                 json!({})
             }
-            // Mailings › Select Recipients › Use an Existing List…: pick a CSV/TSV/text file and
-            // load it as the mail-merge recipients. Opens system UI, like `ui.openFileDialog`.
-            "ui.openRecipientList" => {
-                self.pick_recipient_list();
-                json!({"pending": self.recipient_list_pending})
-            }
-            // Send the document to the system print flow (web, desktop). `file.print` opens the Print
+            // Send the document to the system print dialog (web). `file.print` opens the Print
             // page; this is the button on it, and the one programmatic call that opens system UI
             // here, like `ui.openFileDialog` — only when the host can print.
             "ui.print" => return Some(self.print_to_system()),
-            "ui.discord" => {
-                self.canvas.open_url = Some("https://discord.gg/artcraft".into());
-                json!({})
-            }
             _ => return None,
         }))
     }
 
     /// `ui.print`: export the document to PDF in memory and hand it to the host's print hook.
-    /// An error when the host can't print (File › Print then only saves a PDF).
+    /// An error when the host can't print (desktop: File › Print saves a PDF instead).
     fn print_to_system(&mut self) -> Result<Value, String> {
         if self.services.print.is_none() {
             return Err("printing to the system print dialog isn't available here; export a PDF instead".into());
         }
-        let result = wordcraft_engine::io::save_bytes("document.pdf", &self.session.doc)
+        let result = tabdocs_engine::io::save_bytes("document.pdf", &self.session.doc)
             .and_then(|bytes| self.services.print.as_ref().map_or(Ok(()), |print| print(&bytes)).map(|()| bytes.len()));
         match result {
             Ok(len) => {
@@ -645,10 +1075,29 @@ impl WordApp {
         self.status_msg = Some((s.into(), now_ms()));
     }
 
+    fn open_dialog(&mut self) {
+        if let Some(f) = &self.services.open_async {
+            f("document");
+            return;
+        }
+        let picked = self.services.pick_open.as_ref().and_then(|f| f("document"));
+        if let Some(path) = picked {
+            let _ = self.run("file.open", json!({"path": path}));
+            self.ui.backstage = false;
+        }
+    }
+
+    /// Ask where to save, then save there. True once the document is written.
+    pub fn save_as_dialog(&mut self) -> bool {
+        let name = self.default_save_name();
+        let picked = self.services.pick_save.as_ref().and_then(|f| f(&name));
+        picked.is_some_and(|path| self.run("file.save", json!({"path": path})).is_ok_and(|v| v.get("saved").and_then(Value::as_bool) == Some(true)))
+    }
+
     /// Media key of the selected picture, if any.
     pub(crate) fn selected_picture_media(&self) -> Option<String> {
-        match wordcraft_engine::cmd::objects::selected(&self.session) {
-            Some((_, wordcraft_doc::para::InlineObject::Image { media, .. })) => Some(media),
+        match tabdocs_engine::cmd::objects::selected(&self.session) {
+            Some((_, tabdocs_doc::para::InlineObject::Image { media, .. })) => Some(media),
             _ => None,
         }
     }
@@ -674,25 +1123,17 @@ impl WordApp {
         }
     }
 
-    /// Pick a recipient list (desktop: through the file dialog hook; web: it arrives through the
-    /// inbox).
-    fn pick_recipient_list(&mut self) {
+    fn pick_picture(&mut self) {
         if let Some(f) = &self.services.open_async {
-            f("recipients");
-            self.recipient_list_pending = true;
+            f("picture");
             return;
         }
-        let _ = self.ask_file(file_dialogs::FileDialogRequest::Open { purpose: "recipients".into() }, file_dialogs::AfterPick::Recipients);
-    }
-
-    /// Load mail-merge recipients and say how many there are.
-    pub(crate) fn load_recipients(&mut self, params: Value) -> Result<Value, String> {
-        let r = self.run("mailings.recipients", params);
-        if let Ok(v) = &r {
-            let records = v.get("records").and_then(Value::as_u64).unwrap_or(0).to_string();
-            self.status(i18n::fmt(tl!("Recipients: {count}"), &[("count", &records)]));
+        let picked = self.services.pick_open.as_ref().and_then(|f| f("picture"));
+        if let Some(path) = picked {
+            let _ = self.insert_or_change_picture(json!({"path": path}));
+        } else {
+            self.change_picture_target = None;
         }
-        r
     }
 
     /// The name Save suggests: the open file's own Word format (so a .docm keeps its macros),
@@ -700,7 +1141,7 @@ impl WordApp {
     fn default_save_name(&self) -> String {
         let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_string());
         match ext {
-            Some(e) if wordcraft_engine::io::is_word_package(&e) => format!("{}.{e}", self.title_stem()),
+            Some(e) if tabdocs_engine::io::is_word_package(&e) => format!("{}.{e}", self.title_stem()),
             _ => format!("{}.docx", self.title_stem()),
         }
     }
@@ -724,13 +1165,9 @@ impl WordApp {
         let lang = i18n::Lang::from_pref(&self.ui.language);
         i18n::set_current(lang);
         // Chinese text wants the Chinese face before the Japanese one (one glyph style per line).
-        // An installed CJK font is read only once CJK text is shown (#241): never for an English
-        // interface that doesn't open the language list.
-        let system_cjk = self.fonts_system_cjk || self.want_system_cjk || lang.uses_cjk();
-        if !self.styled || lang.prefers_hans() != self.fonts_hans || system_cjk != self.fonts_system_cjk {
-            theme::install_fonts_with(ctx, lang.prefers_hans(), system_cjk);
+        if !self.styled || lang.prefers_hans() != self.fonts_hans {
+            theme::install_fonts_for(ctx, lang.prefers_hans());
             self.fonts_hans = lang.prefers_hans();
-            self.fonts_system_cjk = system_cjk;
             // Mod with -, = and 0 are Word shortcuts (optional hyphen, subscript, paragraph spacing);
             // egui's keyboard zoom would also scale the whole window on them. Zoom is View › Zoom.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -750,7 +1187,6 @@ impl WordApp {
         zotero::poll(self, ctx);
         read_aloud::poll(self, ctx);
         self.clear_stale_change_picture();
-        let _ = self.poll_file_dialog();
         self.drain_inbox();
         self.autosave_tick(now_ms());
         if self.autosaves() && self.session.dirty {
@@ -776,7 +1212,7 @@ impl WordApp {
     /// Tell the host whether the document has unsaved changes ([`Services::on_dirty`]).
     fn report_dirty(&self) {
         if let Some(f) = &self.services.on_dirty {
-            f(self.session.dirty);
+            f(self.any_dirty_documents());
         }
     }
 
@@ -785,40 +1221,9 @@ impl WordApp {
         self.session.path.is_some() && self.session.path == self.autosave_path
     }
 
-    /// Why AutoSave can't cover the document, or `None` when it can: it writes only a file the
-    /// user saved to in this session, in a format that keeps everything, and never in the browser
-    /// (a page can't write to the user's files; saving there is a download, #176).
-    pub fn autosave_block(&self) -> Option<AutoSaveBlock> {
-        if self.services.download.is_some() {
-            return Some(AutoSaveBlock::Browser);
-        }
-        let Some(path) = &self.session.path else { return Some(AutoSaveBlock::Unsaved) };
-        if !keeps_everything(&path.to_string_lossy()) {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            return Some(AutoSaveBlock::Format { name });
-        }
-        if !self.saved_here() {
-            return Some(AutoSaveBlock::NotSavedHere);
-        }
-        None
-    }
-
-    /// Whether AutoSave covers the document: it is on and nothing blocks it ([`Self::autosave_block`]).
+    /// Whether AutoSave covers the document (only a file the user saved to in this session).
     pub fn autosaves(&self) -> bool {
-        self.autosave && self.autosave_block().is_none()
-    }
-
-    /// `file.autosave` (the AutoSave switch, and scripts): `value` turns AutoSave on or off;
-    /// without it, it toggles what the switch shows. Turning it on for a document AutoSave can't
-    /// cover is an error that says why, instead of a switch that is on but saves nothing (#196).
-    fn set_autosave(&mut self, params: &Value) -> Result<Value, String> {
-        let on = params.get("value").and_then(Value::as_bool).unwrap_or(!self.autosaves());
-        if on && let Some(block) = self.autosave_block() {
-            return Err(block.reason());
-        }
-        self.autosave = on;
-        self.session.autosave = on;
-        Ok(json!({"value": on}))
+        self.autosave && self.saved_here()
     }
 
     /// AutoSave: write a saved document a couple of seconds after the last change. A failure is
@@ -826,7 +1231,9 @@ impl WordApp {
     fn autosave_tick(&mut self, now: f64) {
         if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;
-            if let Err(e) = self.session.run("file.save", &json!({})) {
+            if self.session.path.as_deref().is_some_and(|p| keeps_everything(&p.to_string_lossy()))
+                && let Err(e) = self.session.run("file.save", &json!({}))
+            {
                 log::warn!("AutoSave failed: {e}");
                 self.autosave_path = None;
                 self.status(i18n::fmt(tl!("AutoSave failed: {error}. Save the document to turn AutoSave back on."), &[("error", &e.to_string())]));
@@ -869,6 +1276,7 @@ impl WordApp {
             backstage::show(self, ui);
         } else {
             chrome::title_bar(self, ui);
+            chrome::document_tabs(self, ui);
             ribbon::show(self, ui);
             chrome::status_bar(self, ui);
             panes::show(self, ui);
@@ -884,7 +1292,7 @@ impl WordApp {
         if let Some(url) = self.canvas.open_url.take() {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
-        let title = format!("{}{} - WordCraft", self.title_stem(), if self.session.dirty { " •" } else { "" });
+        let title = format!("{}{} - TabDocs", self.title_stem(), if self.session.dirty { " •" } else { "" });
         if title != self.sent_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.sent_title = title;
@@ -894,23 +1302,16 @@ impl WordApp {
         self.report_dirty();
     }
 
-    /// Files that arrived asynchronously (web picker, drops): documents open, pictures insert,
-    /// recipient lists (CSV/TSV, or a text file asked for as one) load as recipients.
+    /// Files that arrived asynchronously (web picker, drops): documents open, pictures insert.
     fn drain_inbox(&mut self) {
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner()));
         for (name, bytes) in files {
             let lower = name.to_ascii_lowercase();
+            let data = tabdocs_engine::cmd::insert::base64_encode(&bytes);
             let img = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].iter().any(|e| lower.ends_with(e));
-            let list =
-                lower.ends_with(".csv") || lower.ends_with(".tsv") || (lower.ends_with(".txt") && std::mem::take(&mut self.recipient_list_pending));
-            let r = if list {
-                self.load_recipients(json!({"csv": wordcraft_engine::io::decode_text(&bytes)}))
-            } else if img {
-                self.insert_or_change_picture(json!({"data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
-            } else {
-                self.run("file.open", json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
-            };
+            let r =
+                if img { self.insert_or_change_picture(json!({"data": data})) } else { self.run("file.open", json!({"path": name, "data": data})) };
             if r.is_ok() {
                 self.ui.backstage = false;
             }
@@ -986,44 +1387,6 @@ impl WordApp {
     }
 }
 
-/// Why AutoSave can't cover the document ([`WordApp::autosave_block`]); the switch is greyed out
-/// and its tooltip gives [`AutoSaveBlock::reason`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AutoSaveBlock {
-    /// The web app: saving is a download, there is no file to keep writing to.
-    Browser,
-    /// A new document that has never been saved.
-    Unsaved,
-    /// A file in a format that can't keep everything (Markdown, plain text, HTML…), by file name.
-    Format { name: String },
-    /// A file that was opened but not yet saved in this session.
-    NotSavedHere,
-}
-
-impl AutoSaveBlock {
-    /// What the user (or a script) is told, in the interface language.
-    pub fn reason(&self) -> String {
-        match self {
-            AutoSaveBlock::Browser => {
-                tl!("AutoSave isn't available in the browser: it can't write to your files. Save downloads a copy.").to_string()
-            }
-            AutoSaveBlock::Unsaved => tl!("Save the document to turn on AutoSave").to_string(),
-            AutoSaveBlock::Format { name } => i18n::fmt(
-                tl!("AutoSave only keeps .docx, .odt and .rtf files; {name} can't keep all formatting. Save as .docx to turn on AutoSave."),
-                &[("name", name)],
-            ),
-            AutoSaveBlock::NotSavedHere => {
-                tl!("Save the document to turn on AutoSave (a file you have only opened isn't rewritten until you save it)").to_string()
-            }
-        }
-    }
-
-    /// Whether Save As can lift the block (everywhere but the browser).
-    pub fn save_as_helps(&self) -> bool {
-        !matches!(self, AutoSaveBlock::Browser)
-    }
-}
-
 /// Whether saving to `name` keeps the whole document (the formats `file.save` treats as the
 /// document's own file, including macro-enabled documents and templates); anything else is a
 /// copy that leaves it unsaved. AutoSave writes only these formats.
@@ -1032,37 +1395,11 @@ fn keeps_everything(name: &str) -> bool {
     matches!(ext.as_str(), "docx" | "docm" | "dotx" | "dotm" | "odt" | "rtf" | "json")
 }
 
-/// The dialog a user-run command opens when it lacks the input it needs (scripts and agents get
-/// the command's own error or default instead): Select Recipients and Edit Recipient List without
-/// data, Insert Merge Field without a field, Find Recipient without text, the If and Skip
-/// Record If rules (or Rules with no rule at all) without a field, and Table Properties without
-/// settings.
-fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
-    let has = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
-    let rule = params.get("rule").and_then(Value::as_str).map(str::to_ascii_uppercase);
-    match id {
-        "mailings.rules" if !has("field") => match rule.as_deref() {
-            None | Some("IF") => Some("ruleIf"),
-            Some("SKIPIF") => Some("ruleSkipIf"),
-            _ => None,
-        },
-        "mailings.recipients" if !["csv", "path", "rows"].into_iter().any(has) => Some("recipientList"),
-        "mailings.editRecipients" if !has("rows") => Some("recipientList"),
-        "mailings.insertField" if !has("field") => Some("insertMergeField"),
-        "mailings.findRecipient" if !has("text") => Some("findRecipient"),
-        // Table Properties without settings shows the dialog (with settings it applies them).
-        "table.properties" if params.as_object().is_none_or(|m| m.is_empty()) => Some("tableProperties"),
-        _ => None,
-    }
-}
-
-/// User commands that replace or close the document (`file.open` without a path only shows the
-/// file picker; the open that follows is checked). Envelopes, Labels and Finish & Merge make a
-/// new document in its place; a merge written to a file (`path`) leaves it alone.
+/// Commands that actually discard the current document. New and Open instead keep it in an
+/// inactive tab; Envelopes, Labels and Finish & Merge still replace it.
 fn discards_document(id: &str, params: &Value) -> bool {
     match id {
-        "file.new" | "file.close" | "mailings.envelopes" | "mailings.labels" => true,
-        "file.open" => params.get("path").is_some(),
+        "file.close" | "mailings.envelopes" | "mailings.labels" => true,
         "mailings.finish" => params.get("path").and_then(Value::as_str).is_none(),
         _ => false,
     }
@@ -1095,7 +1432,7 @@ mod tests {
     #[test]
     fn word_shortcuts_do_not_zoom_the_window() {
         let ctx = egui::Context::default();
-        let mut app = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let mut app = WordApp::new(Session::new(tabdocs_doc::Document::new()), Services::default());
         let mut frame = |events: Vec<egui::Event>| {
             let input = egui::RawInput { events, ..Default::default() };
             // No painter here: dropping the font atlas delta unapplied trips an epaint debug assertion.
@@ -1133,34 +1470,7 @@ mod tests {
     }
 
     fn app() -> WordApp {
-        WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default())
-    }
-
-    /// Table Layout › Properties (#44) opens the dialog from the ribbon; OK sends only what
-    /// changed, as one `table.properties` step. Scripts with settings never see the dialog.
-    #[test]
-    fn table_properties_button_opens_the_dialog() {
-        let mut a = app();
-        a.run("insert.table", json!({"rows": 2, "cols": 2})).unwrap();
-        a.run("table.properties", json!({})).unwrap();
-        let Some(dialogs::Dialog::TableProperties { form, basis }) = a.dialog.clone() else { panic!("no dialog: {:?}", a.dialog) };
-        assert_eq!(form.changes(&basis), json!({}), "untouched, nothing changes");
-        let mut f = (*form).clone();
-        f.align = "center".into();
-        f.row_height_on = true;
-        f.row_height = 0.5;
-        f.row_exact = true;
-        f.header_row = true;
-        let changes = f.changes(&basis);
-        assert_eq!(changes, json!({"align": "center", "rowHeight": 36.0, "rowHeightRule": "exact", "headerRow": true}));
-        a.dialog = None;
-        a.run("table.properties", changes).unwrap();
-        assert!(a.dialog.is_none(), "settings apply without the dialog");
-        let (tp, _, _) = a.session.sel.focus.path.cell().unwrap();
-        let t = a.session.doc.table(a.session.sel.focus.story, &tp).unwrap();
-        assert_eq!(t.props.align, Some(wordcraft_doc::props::Align::Center));
-        assert_eq!((t.rows[0].props.height, t.rows[0].props.header), (Some(36.0), true));
-        assert_eq!(dialogs::TableForm::read(&a).unwrap().changes(&f), json!({}), "the dialog reopens with the new values");
+        WordApp::new(Session::new(tabdocs_doc::Document::new()), Services::default())
     }
 
     /// Issue #139: Ctrl+wheel over the page didn't zoom.
@@ -1203,91 +1513,6 @@ mod tests {
             frame(&mut a, Vec::new());
         }
         assert!(a.canvas.scale < zoomed, "Ctrl+wheel down zooms out");
-    }
-
-    /// Issue #67: View › Zoom In from a fit mode zoomed *out*: Page Width showed 163% but Zoom In
-    /// stepped from the stale manual 100% to 110%.
-    #[test]
-    fn view_tab_zoom_steps_from_the_shown_zoom_in_fit_modes() {
-        let ctx = egui::Context::default();
-        let mut a = app();
-        a.run("ui.tab", json!({"tab": "View"})).unwrap();
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
-        let frame = |a: &mut WordApp| {
-            for _ in 0..4 {
-                let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
-                ctx.run_ui(input, |ui| {
-                    a.logic(ui.ctx());
-                    a.ui(ui);
-                })
-                .drop_without_applying_deltas();
-            }
-            a.canvas.scale / canvas::PX_PER_PT
-        };
-        let base = frame(&mut a);
-        assert!((base - 1.0).abs() < 1e-3);
-        for fit in ["view.pageWidth", "view.onePage", "view.multiplePages"] {
-            a.run(fit, json!({})).unwrap();
-            let fitted = frame(&mut a);
-            assert!((fitted - base).abs() > 0.05, "{fit} changes the zoom");
-            assert!((a.session.view.zoom - fitted).abs() < 1e-3, "{fit}: session zoom follows the shown zoom");
-            a.run("view.zoomIn", json!({})).unwrap();
-            let zin = frame(&mut a);
-            assert!(zin > fitted, "{fit}: Zoom In zooms in: {fitted} -> {zin}");
-            a.run(fit, json!({})).unwrap();
-            frame(&mut a);
-            a.run("view.zoomOut", json!({})).unwrap();
-            let zout = frame(&mut a);
-            assert!(zout < fitted, "{fit}: Zoom Out zooms out: {fitted} -> {zout}");
-            // The Zoom dialog opens at the shown zoom.
-            a.run(fit, json!({})).unwrap();
-            frame(&mut a);
-            a.run("ui.dialog", json!({"name": "zoom"})).unwrap();
-            assert!(matches!(a.dialog, Some(dialogs::Dialog::Zoom { percent }) if (percent - (fitted * 100.0).round()).abs() < 1.0));
-            a.dialog = None;
-        }
-        a.run("view.zoom100", json!({})).unwrap();
-        assert!((frame(&mut a) - 1.0).abs() < 1e-3);
-    }
-
-    /// Issue #122: touchpad deltas scroll the page 1:1 at once; a wheel notch eases in to about
-    /// three lines.
-    #[test]
-    fn touchpad_scrolls_one_to_one_and_wheel_notches_ease_in() {
-        let ctx = egui::Context::default();
-        let mut a = app();
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 600.0));
-        let mut t = 0.0;
-        let mut frame = |a: &mut WordApp, events: Vec<egui::Event>| {
-            t += 1.0 / 60.0;
-            let input = egui::RawInput { events, time: Some(t), screen_rect: Some(screen), ..Default::default() };
-            ctx.run_ui(input, |ui| {
-                a.logic(ui.ctx());
-                a.ui(ui);
-            })
-            .drop_without_applying_deltas();
-        };
-        for _ in 0..3 {
-            frame(&mut a, Vec::new());
-        }
-        let over_page = a.canvas.canvas_rect.unwrap().center();
-        frame(&mut a, vec![egui::Event::PointerMoved(over_page)]);
-        let wheel = |unit, y: f32, phase| egui::Event::MouseWheel { unit, delta: egui::vec2(0.0, y), phase, modifiers: egui::Modifiers::NONE };
-        let start = a.canvas.scroll_offset.y;
-        frame(&mut a, vec![wheel(egui::MouseWheelUnit::Point, -40.0, egui::TouchPhase::Start)]);
-        assert_eq!(a.canvas.scroll_offset.y, start + 40.0, "the first touchpad delta lands in the same frame");
-        // Fingers lift; the coast after it is left to the unit tests (crate::scroll).
-        frame(&mut a, vec![wheel(egui::MouseWheelUnit::Point, 0.0, egui::TouchPhase::End)]);
-        a.canvas.wheel = Default::default();
-        let at = a.canvas.scroll_offset.y;
-        frame(&mut a, vec![wheel(egui::MouseWheelUnit::Line, -1.0, egui::TouchPhase::Move)]);
-        let first = a.canvas.scroll_offset.y - at;
-        for _ in 0..30 {
-            frame(&mut a, Vec::new());
-        }
-        let notch = crate::scroll::notch_px(a.canvas.scale / crate::canvas::PX_PER_PT);
-        assert!(first > 0.0 && first < notch, "a notch eases in: {first}");
-        assert!((a.canvas.scroll_offset.y - at - notch).abs() < 0.5, "a notch scrolls {notch}: {}", a.canvas.scroll_offset.y - at);
     }
 
     /// Issue #123: zoomed out, pages sit side by side, and clicks map to the page under the pointer.
@@ -1357,7 +1582,7 @@ mod tests {
     }
 
     fn body_text(a: &WordApp) -> String {
-        a.session.doc.plain_text(wordcraft_doc::StoryRef::Body)
+        a.session.doc.plain_text(tabdocs_doc::StoryRef::Body)
     }
 
     fn prompt(a: &WordApp) -> Option<&'static str> {
@@ -1366,7 +1591,7 @@ mod tests {
 
     /// A fresh scratch folder for one test.
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("wordcraft-ui-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tabdocs-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1375,33 +1600,28 @@ mod tests {
     /// A .docx on disk that the app didn't write.
     fn docx_on_disk(dir: &std::path::Path, text: &str) -> std::path::PathBuf {
         let path = dir.join("contract.docx");
-        let mut s = Session::new(wordcraft_doc::Document::from_text(text));
+        let mut s = Session::new(tabdocs_doc::Document::from_text(text));
         s.run("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
         path
     }
 
     /// Surfaces finding 1: Mod+N (and the File › New tiles) replaced unsaved work without asking.
     #[test]
-    fn new_asks_before_discarding_unsaved_work() {
+    fn new_keeps_unsaved_work_in_its_own_tab() {
         let mut a = typed();
         a.run("file.new", json!({})).unwrap();
-        assert_eq!(prompt(&a), Some("saveChanges"));
-        assert!(body_text(&a).contains(UNSAVED), "the document is untouched while the prompt is up");
-        assert!(a.session.dirty);
-
-        // Cancel: nothing happens.
-        a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
         assert_eq!(prompt(&a), None);
-        assert!(body_text(&a).contains(UNSAVED));
-
-        // Don't Save: the new document replaces it.
-        a.run("file.new", json!({"template": "letter"})).unwrap();
-        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
-        assert_eq!(prompt(&a), None);
-        assert!(!body_text(&a).contains(UNSAVED));
+        assert_eq!(a.document_tabs().len(), 2);
         assert!(!a.session.dirty);
-        assert!(!body_text(&a).trim().is_empty(), "the template the user picked was used");
+        assert!(!body_text(&a).contains(UNSAVED));
+        assert!(a.switch_document_tab(0));
+        assert!(a.session.dirty);
+        assert!(body_text(&a).contains(UNSAVED));
+        a.run("file.new", json!({"template": "letter"})).unwrap();
+        assert!(!body_text(&a).trim().is_empty());
+        assert_eq!(a.document_tabs().len(), 3);
     }
+
 
     #[test]
     fn a_clean_document_is_replaced_without_asking() {
@@ -1413,22 +1633,21 @@ mod tests {
 
     /// Open (after the file is picked), recent files and dropped files all go through `file.open`.
     #[test]
-    fn open_asks_before_discarding_unsaved_work() {
+    fn open_keeps_unsaved_work_and_selects_new_tab() {
         let dir = scratch("open");
         let path = docx_on_disk(&dir, "Signed contract");
         let mut a = typed();
         a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
-        assert_eq!(prompt(&a), Some("saveChanges"));
-        assert!(body_text(&a).contains(UNSAVED));
-        assert_eq!(a.session.path, None);
-
-        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert_eq!(prompt(&a), None);
         assert!(body_text(&a).contains("Signed contract"));
         assert_eq!(a.session.path.as_deref(), Some(path.as_path()));
+        assert!(a.switch_document_tab(0));
+        assert!(body_text(&a).contains(UNSAVED));
+        assert!(a.session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Mod+O without a path only shows the file picker, so it doesn't ask yet.
+
     #[test]
     fn open_without_a_path_only_shows_the_picker() {
         let mut a = typed();
@@ -1486,6 +1705,7 @@ mod tests {
             let before = std::fs::read(&path).unwrap();
             let mut a = app();
             a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+            a.close_document_tab(0).unwrap(); // match opening a file from the desktop shell
             a.run("text.insert", json!({"text": "Revised "})).unwrap();
             a.run("file.close", json!({})).unwrap();
             assert_eq!(prompt(&a), Some("saveChanges"));
@@ -1524,7 +1744,7 @@ mod tests {
     }
 
     /// `ui.print` hands the document's PDF to the host's print hook, and is an error (with
-    /// nothing printed) when the host has none.
+    /// nothing printed) when the host has none, as on desktop.
     #[test]
     fn ui_print_needs_the_hosts_print_hook() {
         let mut a = typed();
@@ -1597,7 +1817,7 @@ mod tests {
         let path = docx_on_disk(&dir, "Agent document");
         let ctx = egui::Context::default();
         let mut a = typed();
-        a.run("file.new", json!({})).unwrap();
+        a.run("file.close", json!({})).unwrap();
         assert_eq!(prompt(&a), Some("saveChanges"));
         let asked = a.dialog.clone();
         for command in [
@@ -1647,24 +1867,26 @@ mod tests {
 
     /// Save writes the document first, then carries on with what the user asked for.
     #[test]
-    fn save_then_continue() {
+    fn save_current_tab_does_not_save_or_replace_its_neighbours() {
         let dir = scratch("save");
         let path = docx_on_disk(&dir, "Draft");
         let mut a = app();
         a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
         a.run("text.insert", json!({"text": "Revised "})).unwrap();
+        let edited_index = a.active_document_tab();
         a.run("file.new", json!({})).unwrap();
-        assert_eq!(prompt(&a), Some("saveChanges"));
-        a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
         assert_eq!(prompt(&a), None);
-        assert_eq!(a.session.path, None, "the new document replaced the saved one");
-        let saved = wordcraft_engine::io::open_path(&path).unwrap();
-        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("Revised Draft"));
+        assert_ne!(edited_index, a.active_document_tab());
+        assert!(a.switch_document_tab(edited_index));
+        assert!(a.session.dirty);
+        a.run("file.save", json!({})).unwrap();
+        assert!(!a.session.dirty);
+        let saved = tabdocs_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(tabdocs_doc::StoryRef::Body).contains("Revised Draft"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Save As to a format that doesn't keep everything (a .png of page 1, plain text) reports
-    /// `saved` but leaves the document unsaved; the prompt took that as saved and replaced it.
+
     #[test]
     fn a_save_that_drops_content_does_not_continue() {
         for ext in ["png", "txt"] {
@@ -1672,10 +1894,10 @@ mod tests {
             let picked = dir.join(format!("novel.{ext}")).to_string_lossy().to_string();
             let mut a = typed();
             a.services.pick_save = Some(Box::new(move |_| Some(picked.clone())));
-            a.run("file.new", json!({})).unwrap();
+            a.run("file.close", json!({})).unwrap();
             a.status_msg = None;
             let r = a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
-            assert_eq!(r["done"], false, "{ext}: the New was cancelled");
+            assert_eq!(r["done"], false, "{ext}: closing was cancelled");
             assert!(dir.join(format!("novel.{ext}")).exists(), "{ext}: the copy was written");
             assert_eq!(prompt(&a), None);
             assert!(body_text(&a).contains(UNSAVED), "{ext}: the document is kept");
@@ -1716,8 +1938,8 @@ mod tests {
             a.run("text.insert", json!({"text": "More "})).unwrap();
             a.autosave_tick(now_ms() + 10_000.0);
             assert!(!a.session.dirty, "{ext}: AutoSave wrote the file");
-            let saved = wordcraft_engine::io::open_path(&path).unwrap();
-            assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("More "), "{ext}");
+            let saved = tabdocs_engine::io::open_path(&path).unwrap();
+            assert!(saved.plain_text(tabdocs_doc::StoryRef::Body).contains("More "), "{ext}");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -1731,10 +1953,10 @@ mod tests {
         assert!(a.execute("file.save", json!({})).is_err());
         assert!(a.session.dirty);
 
-        a.run("file.new", json!({})).unwrap();
+        a.run("file.close", json!({})).unwrap();
         a.status_msg = None;
         let r = a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
-        assert_eq!(r["done"], false, "the New was cancelled");
+        assert_eq!(r["done"], false, "closing was cancelled");
         assert!(body_text(&a).contains(UNSAVED));
         assert!(a.session.dirty);
         let msg = a.status_msg.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
@@ -1746,7 +1968,7 @@ mod tests {
     fn save_as_cancelled_keeps_the_document() {
         let mut a = typed();
         a.services.pick_save = Some(Box::new(|_| None));
-        a.run("file.new", json!({})).unwrap();
+        a.run("file.close", json!({})).unwrap();
         a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
         assert_eq!(prompt(&a), None);
         assert!(body_text(&a).contains(UNSAVED));
@@ -1763,8 +1985,8 @@ mod tests {
         a.run("file.close", json!({})).unwrap();
         a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
         assert!(a.quit_requested);
-        let saved = wordcraft_engine::io::open_path(&path).unwrap();
-        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains(UNSAVED));
+        let saved = tabdocs_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(tabdocs_doc::StoryRef::Body).contains(UNSAVED));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1777,6 +1999,229 @@ mod tests {
         control::handle(&mut a, &ctx, &req);
         assert_eq!(prompt(&a), None);
         assert!(!body_text(&a).contains(UNSAVED));
+    }
+
+    #[test]
+    fn switching_tabs_preserves_undo_selection_and_zoom() {
+        let mut a = typed();
+        let original = body_text(&a);
+        a.session.view.zoom = 1.65;
+        a.run("file.new", json!({})).unwrap();
+        a.run("text.insert", json!({"text": "Another chapter"})).unwrap();
+        a.session.view.zoom = 0.8;
+        assert_eq!(a.document_tabs().len(), 2);
+        assert!(a.switch_document_tab(0));
+        assert_eq!(body_text(&a), original);
+        assert_eq!(a.session.view.zoom, 1.65);
+        a.run("edit.undo", json!({})).unwrap();
+        assert!(!body_text(&a).contains(UNSAVED));
+        assert!(a.switch_document_tab(1));
+        assert_eq!(a.session.view.zoom, 0.8);
+        assert!(body_text(&a).contains("Another chapter"));
+        a.run("edit.undo", json!({})).unwrap();
+        assert!(!body_text(&a).contains("Another chapter"));
+    }
+
+    #[test]
+    fn closing_an_inactive_dirty_tab_asks_to_save_without_losing_other_tabs() {
+        let mut a = typed();
+        a.run("file.new", json!({})).unwrap();
+        a.run("text.insert", json!({"text": "Second chapter"})).unwrap();
+        a.close_document_tab(0).unwrap();
+        assert_eq!(a.active_document_tab(), 0);
+        assert_eq!(prompt(&a), Some("saveChanges"));
+        a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert_eq!(a.document_tabs().len(), 2);
+        assert!(body_text(&a).contains(UNSAVED));
+        a.run("file.close", json!({})).unwrap();
+        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert_eq!(a.document_tabs().len(), 1);
+        assert!(body_text(&a).contains("Second chapter"));
+        assert!(!a.quit_requested);
+    }
+
+    #[test]
+    fn pinning_moves_tab_into_left_group_and_prevents_cross_group_drag() {
+        let mut a = app();
+        a.run("file.new", json!({})).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        assert!(a.pin_document_tab(2, true));
+        assert!(a.document_tabs()[0].pinned);
+        assert_eq!(a.active_document_tab(), 0);
+        assert!(!a.reorder_document_tab(0, 2), "pinned tab cannot leave its group by dragging");
+        assert!(a.pin_document_tab(0, false));
+        assert!(a.document_tabs().iter().all(|t| !t.pinned));
+    }
+
+    #[test]
+    fn explicitly_closing_last_tab_disables_session_restoration() {
+        let mut a = app();
+        a.run("file.close", json!({})).unwrap();
+        assert!(a.quit_requested);
+        assert!(a.prefs().workspace.tabs.is_empty());
+    }
+
+    #[test]
+    fn reopening_an_open_file_selects_the_existing_tab() {
+        let dir = scratch("same-file");
+        let path = docx_on_disk(&dir, "Contract");
+        let mut a = app();
+        a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        let original_index = a.active_document_tab();
+        a.run("file.new", json!({})).unwrap();
+        a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(a.active_document_tab(), original_index);
+        assert_eq!(a.document_tabs().len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn window_close_checks_dirty_documents_across_tabs() {
+        let mut a = typed();
+        a.run("file.new", json!({})).unwrap();
+        assert!(!a.session.dirty);
+        assert!(!a.close_requested());
+        assert_eq!(prompt(&a), Some("saveChanges"));
+        a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert!(!a.quit_requested);
+        assert_eq!(a.document_tabs().len(), 2);
+        assert!(!a.close_requested());
+        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert!(a.quit_requested);
+    }
+
+    #[test]
+    fn moving_tabs_preserves_active_document_identity() {
+        let mut a = app();
+        a.run("document.setText", json!({"text": "Alpha"})).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        a.run("document.setText", json!({"text": "Beta"})).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        a.run("document.setText", json!({"text": "Gamma"})).unwrap();
+        assert!(a.reorder_document_tab(0, 2));
+        assert_eq!(a.active_document_tab(), 1);
+        assert!(body_text(&a).contains("Gamma"));
+        assert!(a.switch_document_tab(2));
+        assert!(body_text(&a).contains("Alpha"));
+        assert!(a.switch_document_tab(0));
+        assert!(body_text(&a).contains("Beta"));
+    }
+
+    #[test]
+    fn autosave_authority_is_isolated_per_document_tab() {
+        let dir = scratch("tabs-autosave");
+        let path = dir.join("first.docx");
+        let mut a = typed();
+        a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(a.autosaves());
+        a.run("file.new", json!({})).unwrap();
+        assert!(!a.autosaves());
+        assert!(a.switch_document_tab(0));
+        assert!(a.autosaves());
+        assert!(a.switch_document_tab(1));
+        assert!(!a.autosaves());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_missing_file_keeps_document_tabs_unchanged() {
+        let mut a = typed();
+        let active = a.active_document_tab();
+        let result = a.run("file.open", json!({"path": "/no/such/path/tabdocs-missing.docx"}));
+        assert!(result.is_err());
+        assert_eq!(a.document_tabs().len(), 1);
+        assert_eq!(a.active_document_tab(), active);
+        assert!(body_text(&a).contains(UNSAVED));
+    }
+
+    #[test]
+    fn workspace_restores_order_pins_active_and_skips_missing_files() {
+        let dir = scratch("restore-workspace");
+        let a_path = docx_on_disk(&dir, "First restored");
+        let b_path = dir.join("second.docx");
+        let _ = tabdocs_engine::io::save_path(&b_path, &tabdocs_doc::Document::new());
+        let mut first = app();
+        first.run("file.open", json!({"path": a_path.to_string_lossy()})).unwrap();
+        first.close_document_tab(0).unwrap();
+        first.run("file.open", json!({"path": b_path.to_string_lossy()})).unwrap();
+        assert!(first.pin_document_tab(1, true));
+        first.switch_document_tab(1);
+        let saved = serde_json::to_vec(&first.prefs()).unwrap();
+        let mut second = app();
+        second.apply_prefs(serde_json::from_slice(&saved).unwrap());
+        assert_eq!(second.restore_workspace(), 2);
+        assert_eq!(second.document_tabs().len(), 2);
+        assert!(second.document_tabs()[0].pinned);
+        assert_eq!(second.active_document_tab(), 1);
+        assert_eq!(second.document_tab_path(1).as_deref(), Some(a_path.to_string_lossy().as_ref()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_skips_unreadable_paths_without_deleting_the_initial_blank() {
+        let mut a = app();
+        a.ui.workspace = WorkspaceState {
+            tabs: vec![WorkspaceTab { path: Some("/not/a/real/tabdocs-file.docx".into()), pinned: false }],
+            active: 0,
+        };
+        assert_eq!(a.restore_workspace(), 0);
+        assert_eq!(a.document_tabs().len(), 1);
+        assert!(a.document_tab_path(0).is_none());
+    }
+
+    #[test]
+    fn reopen_closed_file_restores_original_position_and_pin() {
+        let dir = scratch("reopen-closed-file");
+        let path = docx_on_disk(&dir, "Reopen this");
+        let mut a = app();
+        a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        a.close_document_tab(0).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        a.pin_document_tab(0, true);
+        a.close_document_tab(0).unwrap();
+        assert_eq!(a.document_tabs().len(), 1);
+        a.reopen_closed_document_tab().unwrap();
+        assert_eq!(a.document_tabs().len(), 2);
+        assert!(a.document_tabs()[0].pinned);
+        assert!(body_text(&a).contains("Reopen this"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn close_others_preserves_pinned_tabs_and_cancel_stops_batch() {
+        let mut a = app();
+        a.run("file.new", json!({})).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        assert!(a.pin_document_tab(0, true));
+        a.run("text.insert", json!({"text": "Must keep"})).unwrap();
+        assert!(a.close_other_document_tabs(0));
+        assert_eq!(prompt(&a), Some("saveChanges"));
+        a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert_eq!(a.document_tabs().len(), 2, "already closed clean tabs remain closed after Cancel");
+        assert!(!a.quit_requested);
+        assert!(a.close_other_document_tabs(0));
+        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert_eq!(a.document_tabs().len(), 1);
+        assert!(a.document_tabs()[0].pinned);
+    }
+
+    #[test]
+    fn quitting_dirty_documents_keeps_workspace_for_restoration() {
+        let dir = scratch("quit-workspace");
+        let p = docx_on_disk(&dir, "Saved version");
+        let mut a = app();
+        a.run("file.open", json!({"path": p.to_string_lossy()})).unwrap();
+        a.close_document_tab(0).unwrap();
+        a.run("file.new", json!({})).unwrap();
+        a.switch_document_tab(0);
+        a.run("text.insert", json!({"text": "Unsaved edit"})).unwrap();
+        assert!(!a.close_requested());
+        a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+        assert!(a.quit_requested);
+        assert_eq!(a.document_tabs().len(), 2, "the workspace is still available to on_exit");
+        assert_eq!(a.prefs().workspace.active, 0);
+        assert_eq!(a.prefs().workspace.tabs[0].path.as_deref(), Some(p.to_string_lossy().as_ref()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     const MAILINGS: [&str; 3] = ["mailings.envelopes", "mailings.labels", "mailings.finish"];
@@ -1856,7 +2301,7 @@ mod tests {
             assert_eq!(prompt(&a), None);
             let saved = std::fs::read(&path).unwrap();
             assert!(
-                wordcraft_engine::io::open_path(&path).unwrap().plain_text(wordcraft_doc::StoryRef::Body).contains("Revised Again Signed"),
+                tabdocs_engine::io::open_path(&path).unwrap().plain_text(tabdocs_doc::StoryRef::Body).contains("Revised Again Signed"),
                 "{id}: Save wrote the document first"
             );
 
@@ -1903,14 +2348,14 @@ mod tests {
             let result = body_text(&a);
             let b = a.session.document_id();
             assert!(a.session.dirty, "{id}: the result is unsaved");
-            a.run("file.new", json!({})).unwrap();
+            a.run("file.close", json!({})).unwrap();
             assert_eq!(prompt(&a), Some("saveChanges"), "{id}");
 
             a.execute("edit.undo", json!({})).unwrap();
             assert_eq!(a.session.document_id(), b, "{id}");
             assert_eq!(body_text(&a), result, "{id}: nothing from before the mailing comes back");
             a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
-            assert_ne!(a.session.document_id(), b, "{id}: Don't Save discarded the document it asked about");
+            assert!(a.quit_requested, "{id}: Don't Save closed the requested document");
         }
     }
 
@@ -1922,7 +2367,7 @@ mod tests {
             let dir = scratch(&format!("mailings-redo-{}", id.len()));
             let path = docx_on_disk(&dir, "Signed contract");
             let copy = dir.join("copy.docx");
-            let on_file = |p: &std::path::Path| wordcraft_engine::io::open_path(p).unwrap().plain_text(wordcraft_doc::StoryRef::Body);
+            let on_file = |p: &std::path::Path| tabdocs_engine::io::open_path(p).unwrap().plain_text(tabdocs_doc::StoryRef::Body);
             let mut a = app();
             a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
             a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
@@ -1965,59 +2410,9 @@ mod tests {
         assert!(a.session.dirty);
         a.autosave_tick(now_ms() + 10_000.0);
         assert!(!a.session.dirty);
-        let saved = wordcraft_engine::io::open_path(&path).unwrap();
-        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("Typed More Original"));
+        let saved = tabdocs_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(tabdocs_doc::StoryRef::Body).contains("Typed More Original"));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// #196: a saved .md file showed AutoSave on, but AutoSave writes only formats that keep
-    /// everything, so edits stayed unsaved. The switch is now off and blocked with a reason, and
-    /// scripts turning it on get that reason as an error; a .docx saved here is covered.
-    #[test]
-    fn autosave_is_blocked_with_a_reason_for_files_it_cannot_keep() {
-        let dir = scratch("autosave-md");
-        let md = dir.join("notes.md");
-        std::fs::write(&md, "# Notes\n\nSome text\n").unwrap();
-        let mut a = app();
-        assert_eq!(a.autosave_block(), Some(AutoSaveBlock::Unsaved), "a new document has no file yet");
-        a.run("file.open", json!({"path": md.to_string_lossy()})).unwrap();
-        a.run("text.insert", json!({"text": "Typed "})).unwrap();
-        a.run("file.save", json!({})).unwrap();
-        assert!(a.autosave, "the preference stays on");
-        assert_eq!(a.autosave_block(), Some(AutoSaveBlock::Format { name: "notes.md".into() }));
-        assert!(!a.autosaves(), "the switch shows off");
-        let why = a.autosave_block().map(|b| b.reason()).unwrap_or_default();
-        assert!(why.contains("notes.md") && why.contains(".docx"), "{why}");
-        let err = a.run("file.autosave", json!({"value": true})).unwrap_err();
-        assert_eq!(err, why, "scripts are told why");
-        assert!(a.run("file.autosave", json!({"value": false})).is_ok(), "turning it off always works");
-        a.autosave = true;
-
-        // Save As .docx (what the greyed switch offers) lifts the block.
-        let docx = dir.join("notes.docx");
-        a.run("file.saveAs", json!({"path": docx.to_string_lossy()})).unwrap();
-        assert_eq!(a.autosave_block(), None);
-        assert!(a.autosaves());
-        a.run("text.insert", json!({"text": "More "})).unwrap();
-        a.autosave_tick(now_ms() + 10_000.0);
-        assert!(!a.session.dirty, "AutoSave wrote the .docx");
-        assert_eq!(a.run("file.autosave", json!({})).unwrap(), json!({"value": false}), "toggling turns it off");
-        assert!(!a.autosaves());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// #176: in the browser saving is a download, so AutoSave can't keep a file up to date; the
-    /// switch is blocked with a reason instead of being on while nothing is saved.
-    #[test]
-    fn autosave_is_unavailable_in_the_browser() {
-        let services = Services { download: Some(Box::new(|_: &str, _: &[u8]| Ok(()))), ..Default::default() };
-        let mut a = WordApp::new(Session::new(wordcraft_doc::Document::new()), services);
-        a.run("text.insert", json!({"text": "Hello"})).unwrap();
-        a.run("file.save", json!({"path": "draft.docx"})).unwrap();
-        assert_eq!(a.autosave_block(), Some(AutoSaveBlock::Browser));
-        assert!(!a.autosaves());
-        let err = a.run("file.autosave", json!({"value": true})).unwrap_err();
-        assert!(err.contains("browser"), "{err}");
     }
 
     /// Cancelling the Open picker (Mod+O) left the document as it was but turned AutoSave off.
@@ -2035,8 +2430,8 @@ mod tests {
         a.run("text.insert", json!({"text": " continues"})).unwrap();
         a.autosave_tick(now_ms() + 10_000.0);
         assert!(!a.session.dirty);
-        let saved = wordcraft_engine::io::open_path(&path).unwrap();
-        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("chapter continues"));
+        let saved = tabdocs_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(tabdocs_doc::StoryRef::Body).contains("chapter continues"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2067,12 +2462,12 @@ mod tests {
     /// Web Save of an opened .docm downloads a .docm, so its macros stay (Codex review, docm lane).
     #[test]
     fn web_save_keeps_the_opened_word_format() {
-        let mut doc = wordcraft_doc::Document::new();
+        let mut doc = tabdocs_doc::Document::new();
         doc.passthrough.insert("word/vbaProject.bin".into(), std::sync::Arc::new(vec![0xD0, 0xCF, 0x11, 0xE0, 1, 2, 3]));
         doc.passthrough.insert("word/vbaData.xml".into(), std::sync::Arc::new(b"<wne:vbaSuppData/>".to_vec()));
-        // The docx reader's list of parts the project relates to (wordcraft_docx VBA_RELATED).
+        // The docx reader's list of parts the project relates to (tabdocs_docx VBA_RELATED).
         let related = "http://schemas.microsoft.com/office/2006/relationships/wordVbaData\tword/vbaData.xml\tapplication/vnd.ms-word.vbaData+xml\n";
-        doc.passthrough.insert("wordcraft:vbaProject.related".into(), std::sync::Arc::new(related.as_bytes().to_vec()));
+        doc.passthrough.insert("tabdocs:vbaProject.related".into(), std::sync::Arc::new(related.as_bytes().to_vec()));
         let got: std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>> = Default::default();
         let sink = got.clone();
         let services = Services {
@@ -2090,7 +2485,7 @@ mod tests {
             a.run("file.save", json!({})).unwrap();
             let (name, bytes) = got.borrow_mut().pop().unwrap();
             assert_eq!(name, expect);
-            let back = wordcraft_engine::io::open_bytes(&name, &bytes).unwrap();
+            let back = tabdocs_engine::io::open_bytes(&name, &bytes).unwrap();
             let macros = name.to_ascii_lowercase().ends_with('m');
             for part in ["word/vbaProject.bin", "word/vbaData.xml"] {
                 assert_eq!(back.passthrough.contains_key(part), macros, "{opened}: {part}");
@@ -2101,7 +2496,7 @@ mod tests {
         a.run("file.saveAs", json!({"path": "m.docx"})).unwrap();
         let (name, bytes) = got.borrow_mut().pop().unwrap();
         assert_eq!(name, "m.docx");
-        assert!(!wordcraft_engine::io::open_bytes(&name, &bytes).unwrap().passthrough.contains_key("word/vbaProject.bin"));
+        assert!(!tabdocs_engine::io::open_bytes(&name, &bytes).unwrap().passthrough.contains_key("word/vbaProject.bin"));
     }
 
     #[test]
@@ -2191,7 +2586,7 @@ mod tests {
     }
 
     fn insert_picture(a: &mut WordApp, c: [u8; 4]) {
-        let data = wordcraft_engine::cmd::insert::base64_encode(&png_bytes(c));
+        let data = tabdocs_engine::cmd::insert::base64_encode(&png_bytes(c));
         a.session.run("insert.picture", &json!({"data": data})).unwrap();
     }
 
@@ -2252,127 +2647,5 @@ mod tests {
         assert!(a.change_picture_target.is_some());
         let _ = a.run("format.bold", json!({}));
         assert!(a.change_picture_target.is_none());
-    }
-
-    fn dialog_name(a: &WordApp) -> Option<&'static str> {
-        a.dialog.as_ref().map(dialogs::Dialog::name)
-    }
-
-    /// #240: Select Recipients needs data, so clicking it opens the recipient list instead of
-    /// reporting missing parameters; scripts and agents still get the error.
-    #[test]
-    fn select_recipients_opens_the_recipient_list() {
-        let mut a = app();
-        let r = a.run("mailings.recipients", json!({})).unwrap();
-        assert_eq!(r, json!({"pending": "recipientList"}));
-        assert_eq!(dialog_name(&a), Some("recipientList"));
-        assert!(a.status_msg.is_none(), "no error in the status bar: {:?}", a.status_msg);
-        let Some(dialogs::Dialog::RecipientList { fields, rows, .. }) = &a.dialog else { panic!() };
-        assert_eq!(fields.len(), dialogs::NEW_LIST_FIELDS.len());
-        assert_eq!(rows.len(), 1, "a new list starts with one empty entry");
-        // Edit Recipient List opens the same dialog, showing the current list.
-        a.dialog = None;
-        a.run("mailings.recipients", json!({"csv": "Name,City\nAda,London"})).unwrap();
-        a.run("mailings.editRecipients", json!({})).unwrap();
-        let Some(dialogs::Dialog::RecipientList { fields, rows, .. }) = &a.dialog else { panic!() };
-        assert_eq!((fields.clone(), rows.clone()), (vec!["Name".to_string(), "City".into()], vec![vec!["Ada".to_string(), "London".into()]]));
-        // Type a New List… always starts fresh.
-        a.run("ui.dialog", json!({"name": "newRecipientList"})).unwrap();
-        let Some(dialogs::Dialog::RecipientList { fields, .. }) = &a.dialog else { panic!() };
-        assert_eq!(fields[0], dialogs::NEW_LIST_FIELDS[0]);
-        // Insert Merge Field without a field opens its dialog too.
-        assert_eq!(a.run("mailings.insertField", json!({})).unwrap(), json!({"pending": "insertMergeField"}));
-        // Programmatic calls never open dialogs.
-        let mut b = app();
-        assert!(b.execute("mailings.recipients", json!({})).is_err());
-        assert!(b.dialog.is_none());
-    }
-
-    /// Rules › If…Then…Else… asks for its condition and inserts the IF field it describes; Next
-    /// Record has nothing to ask. Match Fields and Check for Errors show what they found.
-    #[test]
-    fn merge_rules_and_reports_open_dialogs() {
-        let mut a = app();
-        a.run("mailings.recipients", json!({"csv": "First Name,City\nAda,London"})).unwrap();
-        assert_eq!(a.run("mailings.rules", json!({"rule": "IF"})).unwrap(), json!({"pending": "ruleIf"}));
-        let Some(mut d) = a.dialog.take() else { panic!("no dialog") };
-        let dialogs::Dialog::MergeRule { field, value, then, els, .. } = &mut d else { panic!("{d:?}") };
-        assert_eq!(field, "First Name", "the list's first field is picked");
-        (*field, *value, *then, *els) = ("City".into(), "London".into(), "Local".into(), "Away".into());
-        let params = dialogs::rule_params(&d).unwrap();
-        a.run("mailings.rules", params).unwrap();
-        assert!(a.dialog.is_none());
-        let fields = |a: &WordApp| -> Vec<String> {
-            let (doc, body) = (&a.session.doc, wordcraft_doc::StoryRef::Body);
-            let paras = doc.para_paths(body).into_iter().filter_map(|p| doc.para(body, &p).cloned());
-            paras
-                .flat_map(|p| p.objects)
-                .filter_map(|o| if let wordcraft_doc::para::InlineObject::Field { instr, .. } = o { Some(instr) } else { None })
-                .collect()
-        };
-        assert_eq!(fields(&a), vec![r#"IF { MERGEFIELD City } = "London" "Local" "Away""#]);
-        // Next Record inserts directly; Skip Record If asks.
-        assert!(a.run("mailings.rules", json!({"rule": "NEXT"})).unwrap().get("pending").is_none());
-        assert_eq!(fields(&a).last().map(String::as_str), Some("NEXT"));
-        assert_eq!(a.run("mailings.rules", json!({"rule": "skipif"})).unwrap(), json!({"pending": "ruleSkipIf"}));
-        a.dialog = None;
-        a.run("mailings.matchFields", json!({})).unwrap();
-        let Some(dialogs::Dialog::MatchFields { address, .. }) = &a.dialog else { panic!() };
-        assert_eq!(address["firstName"], "First Name");
-        a.run("mailings.checkErrors", json!({})).unwrap();
-        let Some(dialogs::Dialog::CheckErrors { unknown, records }) = &a.dialog else { panic!() };
-        assert_eq!((unknown.len(), *records), (0, 1));
-        // Scripts and agents get the data or the default rule, never a dialog.
-        let mut b = app();
-        b.execute("mailings.checkErrors", json!({})).unwrap();
-        b.execute("mailings.rules", json!({})).unwrap();
-        assert!(b.dialog.is_none());
-    }
-
-    /// Desktop: Use an Existing List… picks a file and loads it as recipients, not as a document.
-    #[test]
-    fn an_existing_list_picked_on_the_desktop_loads_recipients() {
-        let dir = scratch("recipients");
-        let csv = dir.join("people.csv");
-        std::fs::write(&csv, "First Name,City\nAda,London\nAlan,Wilmslow\n").unwrap();
-        let mut a = typed();
-        let asked = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-        let (seen, path) = (asked.clone(), csv.to_string_lossy().to_string());
-        a.services.pick_open = Some(Box::new(move |purpose| {
-            *seen.borrow_mut() = purpose.to_string();
-            Some(path.clone())
-        }));
-        a.run("ui.openRecipientList", json!({})).unwrap();
-        assert_eq!(*asked.borrow(), "recipients", "the host can offer CSV files");
-        assert_eq!(a.session.merge.headers, vec!["First Name", "City"]);
-        assert_eq!(a.session.merge.rows.len(), 2);
-        assert!(body_text(&a).contains(UNSAVED), "the document stays open");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Web: the picked file arrives through the inbox and loads as recipients, even as .txt; a
-    /// CSV dropped on the page does too. Anything else afterwards opens as before.
-    #[test]
-    fn an_existing_list_picked_on_the_web_loads_recipients() {
-        let mut a = typed();
-        let asked = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-        let seen = asked.clone();
-        a.services.open_async = Some(Box::new(move |purpose| *seen.borrow_mut() = purpose.to_string()));
-        let inbox: Inbox = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        a.services.inbox = Some(inbox.clone());
-        assert_eq!(a.run("ui.openRecipientList", json!({})).unwrap(), json!({"pending": true}));
-        assert_eq!(*asked.borrow(), "recipients");
-        inbox.lock().unwrap().push(("people.txt".into(), b"Name\tCity\nAda\tLondon\n".to_vec()));
-        a.drain_inbox();
-        assert_eq!(a.session.merge.headers, vec!["Name", "City"]);
-        assert!(!a.recipient_list_pending);
-        assert!(body_text(&a).contains(UNSAVED), "the document stays open");
-        inbox.lock().unwrap().push(("more.csv".into(), b"Name\nBo\nCy\n".to_vec()));
-        a.drain_inbox();
-        assert_eq!(a.session.merge.rows.len(), 2);
-        // A cancelled picker leaves nothing pending once the user does something else.
-        a.run("ui.openRecipientList", json!({})).unwrap();
-        a.run("format.bold", json!({})).unwrap();
-        assert!(!a.recipient_list_pending);
     }
 }

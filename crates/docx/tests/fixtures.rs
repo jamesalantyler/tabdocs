@@ -2,11 +2,11 @@
 
 use std::io::Write;
 
-use wordcraft_doc::para::{Anchor, FloatAlign, NoteKind, ShapeKind, Wrap};
-use wordcraft_doc::props::{Align, Border, BorderStyle, Rgb, TextColor, VMerge};
-use wordcraft_doc::{Block, Document, InlineObject, Paragraph};
+use tabdocs_doc::para::{Anchor, FloatAlign, NoteKind, ShapeKind, Wrap};
+use tabdocs_doc::props::{Align, Border, BorderStyle, Rgb, TextColor, VMerge};
+use tabdocs_doc::{Block, Document, InlineObject, Paragraph};
 
-const W_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office""#;
+const W_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office""#;
 
 const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
 
@@ -44,7 +44,7 @@ fn docx(body: &str, doc_rels: &[(&str, &str, &str)], extra: &[(&str, &str)]) -> 
 }
 
 fn read_body(body: &str) -> Document {
-    wordcraft_docx::read(&docx(body, &[], &[])).unwrap()
+    tabdocs_docx::read(&docx(body, &[], &[])).unwrap()
 }
 
 fn paras(d: &Document) -> Vec<&Paragraph> {
@@ -77,7 +77,7 @@ fn toc_complex_field_spanning_paragraphs() {
     assert_eq!(p[4].plain_text(), "Page 7");
     assert_eq!(p[4].objects[0], InlineObject::Field { instr: "PAGE".into(), result: "7".into(), locked: false });
     // And it writes back out and reads the same.
-    let again = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
+    let again = tabdocs_docx::read(&tabdocs_docx::write(&d).unwrap()).unwrap();
     assert_eq!(again.body, d.body);
 }
 
@@ -94,7 +94,7 @@ fn hyperlink_runs_and_wrappers() {
 </w:p>
 <w:sdt><w:sdtContent><w:p><w:r><w:t>in block sdt</w:t></w:r></w:p></w:sdtContent></w:sdt>"#;
     let bytes = docx(body, &[("rId5", "hyperlink", "https://example.org/")], &[]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     let p = paras(&d);
     assert_eq!(p[0].text, "siteXABC\u{F04A}\u{2011}\u{AD}\n\u{C}\u{E} e&T");
     assert_eq!(p[0].props_of_char(0).link.as_deref(), Some("https://example.org/"));
@@ -216,7 +216,7 @@ fn styles_numbering_settings_notes_comments_from_parts() {
         ("word/header1.xml", header.as_bytes()),
         ("docProps/core.xml", core.as_bytes()),
     ]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     // Styles: localized default id renamed to Normal; display names mapped.
     let h = d.styles.get("1").unwrap();
     assert_eq!(h.name, "Heading 1");
@@ -229,30 +229,30 @@ fn styles_numbering_settings_notes_comments_from_parts() {
     assert_eq!(d.styles.default_chr.font.as_deref(), Some("Minor Face"));
     assert_eq!(d.styles.default_chr.size, Some(11.0));
     let g = d.styles.get("Grid").unwrap().table.as_ref().unwrap();
-    assert_eq!(g.header_fill, Some(wordcraft_doc::Rgb(0x44, 0x72, 0xC4)));
+    assert_eq!(g.header_fill, Some(tabdocs_doc::Rgb(0x44, 0x72, 0xC4)));
     assert_eq!(g.header_chr.bold, Some(true));
-    assert_eq!(d.settings.theme_colors[4], wordcraft_doc::Rgb(0x44, 0x72, 0xC4));
+    assert_eq!(d.settings.theme_colors[4], tabdocs_doc::Rgb(0x44, 0x72, 0xC4));
     assert_eq!(d.settings.major_font, "Major Face");
     // Numbering.
     let lv = d.numbering.level(2, 0).unwrap();
     assert_eq!((lv.start, lv.text.as_str(), lv.indent, lv.hanging, lv.align), (3, "%1)", 36.0, 18.0, Align::Right));
     let lv1 = d.numbering.level(2, 1).unwrap();
     assert_eq!(lv1.chr.font.as_deref(), Some("Courier New"));
-    assert_eq!(lv1.suffix, wordcraft_doc::numbering::LevelSuffix::Space);
+    assert_eq!(lv1.suffix, tabdocs_doc::numbering::LevelSuffix::Space);
     assert_eq!(d.numbering.num(2).unwrap().start_overrides, vec![(0, 5)]);
     // Settings.
     assert!(d.settings.track_changes && d.settings.even_odd_headers);
     assert_eq!(d.settings.default_tab, 35.4);
-    assert_eq!(d.settings.footnote_format, wordcraft_doc::section::NumFormat::LowerRoman);
+    assert_eq!(d.settings.footnote_format, tabdocs_doc::section::NumFormat::LowerRoman);
     // Body.
     let p = paras(&d);
     assert_eq!(p[0].props.style.as_deref(), Some("1"));
-    assert_eq!(p[0].props.numbering, Some(wordcraft_doc::props::NumRef { num: 2, level: 1 }));
+    assert_eq!(p[0].props.numbering, Some(tabdocs_doc::props::NumRef { num: 2, level: 1 }));
     assert_eq!(p[0].props_of_char(4).font.as_deref(), Some("Major Face"));
     match &p[0].objects[..] {
         [InlineObject::CommentStart { id: 5 }, InlineObject::NoteRef { kind: NoteKind::Footnote, id, .. }, InlineObject::CommentEnd { id: 5 }] => {
             let note = d.parts.get(id).unwrap().blocks[0].as_para().unwrap();
-            assert_eq!(note.text, format!("{} Note text", wordcraft_doc::para::OBJ));
+            assert_eq!(note.text, format!("{} Note text", tabdocs_doc::para::OBJ));
             assert_eq!(note.objects, vec![InlineObject::NoteRef { kind: NoteKind::Footnote, id: *id, custom: String::new() }]);
         }
         o => panic!("{o:?}"),
@@ -287,21 +287,21 @@ fn table_style_whole_table_shading_and_margins() {
 </w:styles>"#
     );
     let bytes = docx("<w:p/>", &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     let base = d.styles.get("Base").unwrap();
     let parts = base.table.as_ref().unwrap();
-    assert_eq!(parts.fill, Some(wordcraft_doc::Rgb(0xEE, 0xEE, 0xEE)));
+    assert_eq!(parts.fill, Some(tabdocs_doc::Rgb(0xEE, 0xEE, 0xEE)));
     assert_eq!(parts.cell_margins, Some([1.0, 14.4, 0.0, 14.4]));
     let whole = d.styles.get("Whole").unwrap();
     assert_eq!(whole.para.align, Some(Align::Center));
     assert_eq!(whole.chr.bold, Some(true));
-    assert_eq!(whole.chr.color, Some(TextColor::Rgb(wordcraft_doc::Rgb(0x1F, 0x4E, 0x79))));
-    assert_eq!(whole.table.as_ref().unwrap().fill, Some(wordcraft_doc::Rgb(0xDD, 0xEB, 0xF7)));
+    assert_eq!(whole.chr.color, Some(TextColor::Rgb(tabdocs_doc::Rgb(0x1F, 0x4E, 0x79))));
+    assert_eq!(whole.table.as_ref().unwrap().fill, Some(tabdocs_doc::Rgb(0xDD, 0xEB, 0xF7)));
     assert_eq!(whole.table.as_ref().unwrap().cell_margins, None);
     let merged = d.styles.table_style("Whole").unwrap();
     assert_eq!(merged.para.space_after, Some(0.0), "from Base");
     assert_eq!(merged.para.align, Some(Align::Center));
-    assert_eq!(merged.parts.fill, Some(wordcraft_doc::Rgb(0xDD, 0xEB, 0xF7)));
+    assert_eq!(merged.parts.fill, Some(tabdocs_doc::Rgb(0xDD, 0xEB, 0xF7)));
     assert_eq!(merged.parts.cell_margins, Some([1.0, 14.4, 0.0, 14.4]), "from Base");
 }
 
@@ -334,9 +334,9 @@ fn note_marks_reference_their_own_note() {
         &[("rId1", "footnotes", "footnotes.xml"), ("rId2", "endnotes", "endnotes.xml")],
         &[("word/footnotes.xml", &footnotes), ("word/endnotes.xml", &endnotes)],
     );
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     let p = paras(&d)[0];
-    assert_eq!(p.text.chars().filter(|c| *c == wordcraft_doc::para::OBJ).count(), 4, "{:?}", p.objects);
+    assert_eq!(p.text.chars().filter(|c| *c == tabdocs_doc::para::OBJ).count(), 4, "{:?}", p.objects);
     let refs: Vec<(NoteKind, u32)> = p
         .objects
         .iter()
@@ -349,7 +349,7 @@ fn note_marks_reference_their_own_note() {
     for (kind, id) in [refs[0], refs[2], refs[3]] {
         let n = first_para(id);
         assert_eq!(n.objects, vec![InlineObject::NoteRef { kind, id, custom: String::new() }], "note {id}");
-        assert!(n.text.starts_with(wordcraft_doc::para::OBJ), "{:?}", n.text);
+        assert!(n.text.starts_with(tabdocs_doc::para::OBJ), "{:?}", n.text);
         let style = if kind == NoteKind::Footnote { "FootnoteReference" } else { "EndnoteReference" };
         assert_eq!(n.props_of_char(0).style.as_deref(), Some(style));
     }
@@ -369,10 +369,10 @@ fn empty_tbl_borders_elements_leave_sides_unset() {
         r#"<w:styles {W_NS}><w:style w:type="table" w:styleId="TS"><w:name w:val="TS"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="2" w:color="000000"/><w:left w:val="single" w:sz="2" w:color="000000"/><w:bottom w:val="single" w:sz="2" w:color="000000"/><w:right w:val="single" w:sz="2" w:color="000000"/><w:insideH w:val="single" w:sz="2" w:color="000000"/><w:insideV w:val="single" w:sz="2" w:color="000000"/></w:tblBorders></w:tblPr></w:style></w:styles>"#
     );
     let body = r#"<w:tbl><w:tblPr><w:tblStyle w:val="TS"/><w:tblBorders></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcBorders></w:tcBorders></w:tcPr><w:p/></w:tc><w:tc><w:tcPr><w:tcBorders></w:tcBorders></w:tcPr><w:p/></w:tc></w:tr></w:tbl>"#;
-    let d = wordcraft_docx::read(&docx(body, &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
+    let d = tabdocs_docx::read(&docx(body, &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
     let t = d.body.iter().find_map(|b| b.as_table()).unwrap();
-    assert_eq!(t.props.borders, Some(wordcraft_doc::props::Borders::default()));
-    assert_eq!(t.rows[0].cells[0].props.borders, Some(wordcraft_doc::props::Borders::default()));
+    assert_eq!(t.props.borders, Some(tabdocs_doc::props::Borders::default()));
+    assert_eq!(t.rows[0].cells[0].props.borders, Some(tabdocs_doc::props::Borders::default()));
     let parts = d.styles.get("TS").unwrap().table.clone().unwrap();
     let b = parts.borders.unwrap();
     assert!(b.top.is_some() && b.between.is_some() && b.inside_v.is_some());
@@ -393,7 +393,7 @@ fn vml_image_and_inline_drawing() {
         ("word/_rels/document.xml.rels", r.as_bytes()),
         ("word/media/pic.png", png),
     ]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     let p = paras(&d);
     assert_eq!(p[0].objects.len(), 2);
     match (&p[0].objects[0], &p[0].objects[1]) {
@@ -408,59 +408,6 @@ fn vml_image_and_inline_drawing() {
 }
 
 #[test]
-fn chart_and_diagram_drawings_are_graphic_objects() {
-    // A diagram's data holds a blip: the URI decides first, so no picture is read from it.
-    let drawing = |uri: &str, data: &str| {
-        format!(
-            r#"<w:r><w:drawing><wp:inline><wp:extent cx="2743200" cy="1828800"/><wp:docPr id="5" name="G" descr="sales"/><a:graphic><a:graphicData uri="{uri}">{data}</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#
-        )
-    };
-    let body = format!(
-        "<w:p>{}{}</w:p>",
-        drawing("http://schemas.openxmlformats.org/drawingml/2006/chart", ""),
-        drawing("http://schemas.openxmlformats.org/drawingml/2006/diagram", r#"<a:blip r:embed="rIdImg"/>"#)
-    );
-    let d = read_body(&body);
-    let p = paras(&d);
-    assert_eq!(p[0].objects.len(), 2);
-    match (&p[0].objects[0], &p[0].objects[1]) {
-        (InlineObject::Graphic { w: w1, h: h1, alt, graphic: g1, .. }, InlineObject::Graphic { graphic: g2, .. }) => {
-            assert_eq!((*w1, *h1, alt.as_str()), (216.0, 144.0, "sales"));
-            assert_eq!(g1.kind, wordcraft_doc::graphic::GraphicKind::Chart);
-            assert_eq!(g2.kind, wordcraft_doc::graphic::GraphicKind::Diagram);
-            assert!(g1.items.is_empty() && g2.items.is_empty());
-        }
-        o => panic!("{o:?}"),
-    }
-}
-
-#[test]
-fn a_chart_part_is_built_once_and_only_through_a_chart_relationship() {
-    let chart = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:ser><c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#;
-    let drawing = |id: &str| {
-        format!(
-            r#"<w:r><w:drawing><wp:inline><wp:extent cx="2743200" cy="1828800"/><wp:docPr id="5" name="G"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="{id}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#
-        )
-    };
-    let body = format!("<w:p>{}{}{}</w:p>", drawing("rIdChart"), drawing("rIdChart"), drawing("rIdNotChart"));
-    let bytes = docx(
-        &body,
-        &[("rIdChart", "chart", "charts/chart1.xml"), ("rIdNotChart", "image", "charts/chart1.xml")],
-        &[("word/charts/chart1.xml", chart)],
-    );
-    let d = wordcraft_docx::read(&bytes).unwrap();
-    let graphics: Vec<_> = paras(&d)[0]
-        .objects
-        .iter()
-        .filter_map(|o| if let InlineObject::Graphic { graphic, .. } = o { Some(graphic.clone()) } else { None })
-        .collect();
-    assert_eq!(graphics.len(), 3);
-    assert!(!graphics[0].items.is_empty(), "the chart is drawn");
-    assert!(std::sync::Arc::ptr_eq(&graphics[0], &graphics[1]), "one build for both references");
-    assert!(graphics[2].items.is_empty(), "an image relationship is not a chart");
-}
-
-#[test]
 fn strict_namespace_and_bad_numbers() {
     let doc = r#"<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"><w:body>
 <w:p><w:pPr><w:jc w:val="end"/><w:ind w:start="1in" w:hanging="abc"/><w:spacing w:before="-50" w:line="99999999999999999999" w:lineRule="exact"/><w:outlineLvl w:val="300"/><w:numPr><w:numId w:val="-4"/></w:numPr></w:pPr>
@@ -469,7 +416,7 @@ fn strict_namespace_and_bad_numbers() {
 <w:sectPr><w:pgSz w:w="0" w:h="x"/><w:cols w:num="-3"/><w:pgNumType w:start="-1" w:fmt="klingon"/></w:sectPr>
 </w:body></w:document>"#;
     let bytes = zip(&[("_rels/.rels", ROOT_RELS.as_bytes()), ("word/document.xml", doc.as_bytes())]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     let p = paras(&d);
     assert_eq!(p[0].text, "strict");
     assert_eq!(p[0].props.align, Some(Align::Right));
@@ -485,7 +432,7 @@ fn strict_namespace_and_bad_numbers() {
     assert_eq!(d.last_section.page_w, 612.0);
     assert_eq!(d.last_section.columns.count, 1);
     // The document can be written back.
-    wordcraft_docx::write(&d).unwrap();
+    tabdocs_docx::write(&d).unwrap();
 }
 
 #[test]
@@ -520,11 +467,11 @@ fn header_self_reference_and_escaping_targets() {
         ("word/header1.xml", hdr.as_bytes()),
         ("word/_rels/header1.xml.rels", hdr_rels.as_bytes()),
     ]);
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     assert_eq!(d.last_section.headers.default, d.last_section.headers.even);
     assert!(d.media.is_empty());
-    let out = wordcraft_docx::write(&d).unwrap();
-    wordcraft_docx::read(&out).unwrap();
+    let out = tabdocs_docx::write(&d).unwrap();
+    tabdocs_docx::read(&out).unwrap();
 }
 
 /// A document whose settings part is `settings` (None: no settings part at all).
@@ -534,7 +481,7 @@ fn with_settings(settings: Option<&str>) -> Document {
         None => read_body(body),
         Some(inner) => {
             let s = format!(r#"<w:settings {W_NS}>{inner}</w:settings>"#);
-            wordcraft_docx::read(&docx(body, &[("rId1", "settings", "settings.xml")], &[("word/settings.xml", &s)])).unwrap()
+            tabdocs_docx::read(&docx(body, &[("rId1", "settings", "settings.xml")], &[("word/settings.xml", &s)])).unwrap()
         }
     }
 }
@@ -547,14 +494,14 @@ fn compatibility_mode_is_read_and_defaults_to_word_2007() {
     assert_eq!(with_settings(Some(&compat("15"))).settings.compat_mode, 15);
     assert_eq!(with_settings(Some(&compat("14"))).settings.compat_mode, 14);
     // Unnamed, out of range or junk values.
-    assert_eq!(with_settings(Some("<w:compat/>")).settings.compat_mode, wordcraft_doc::LEGACY_COMPAT_MODE);
-    assert_eq!(with_settings(None).settings.compat_mode, wordcraft_doc::LEGACY_COMPAT_MODE);
+    assert_eq!(with_settings(Some("<w:compat/>")).settings.compat_mode, tabdocs_doc::LEGACY_COMPAT_MODE);
+    assert_eq!(with_settings(None).settings.compat_mode, tabdocs_doc::LEGACY_COMPAT_MODE);
     assert_eq!(with_settings(Some(&compat("-3"))).settings.compat_mode, 11);
     assert_eq!(with_settings(Some(&compat("99999"))).settings.compat_mode, 99);
-    assert_eq!(with_settings(Some(&compat("abc"))).settings.compat_mode, wordcraft_doc::LEGACY_COMPAT_MODE);
+    assert_eq!(with_settings(Some(&compat("abc"))).settings.compat_mode, tabdocs_doc::LEGACY_COMPAT_MODE);
     // Another vendor's setting of the same name is ignored.
     let other = r#"<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="urn:example" w:val="15"/></w:compat>"#;
-    assert_eq!(with_settings(Some(other)).settings.compat_mode, wordcraft_doc::LEGACY_COMPAT_MODE);
+    assert_eq!(with_settings(Some(other)).settings.compat_mode, tabdocs_doc::LEGACY_COMPAT_MODE);
 }
 
 #[test]
@@ -564,8 +511,8 @@ fn line_rule_is_read_case_insensitively() {
         r#"<w:p><w:pPr><w:spacing w:line="280" w:lineRule="atleast"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p><w:p><w:pPr><w:spacing w:line="300" w:lineRule="EXACT"/></w:pPr></w:p>"#,
     );
     let p = paras(&d);
-    assert_eq!(p[0].props.line_spacing, Some(wordcraft_doc::props::LineSpacing::AtLeast(14.0)));
-    assert_eq!(p[1].props.line_spacing, Some(wordcraft_doc::props::LineSpacing::Exactly(15.0)));
+    assert_eq!(p[0].props.line_spacing, Some(tabdocs_doc::props::LineSpacing::AtLeast(14.0)));
+    assert_eq!(p[1].props.line_spacing, Some(tabdocs_doc::props::LineSpacing::Exactly(15.0)));
 }
 
 #[test]
@@ -610,7 +557,7 @@ fn anchor_alignment_reference_areas_and_distances() {
 
 #[test]
 fn documents_without_a_compatibility_mode_are_laid_out_as_word_2007() {
-    assert_eq!(read_body("<w:p/>").settings.compat_mode, wordcraft_doc::LEGACY_COMPAT_MODE);
+    assert_eq!(read_body("<w:p/>").settings.compat_mode, tabdocs_doc::LEGACY_COMPAT_MODE);
 }
 
 #[test]
@@ -624,7 +571,7 @@ fn style_rfonts_without_ascii_inherits_doc_defaults_font() {
 </w:styles>"#
     );
     let body = r#"<w:p><w:r><w:t>Plain</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:hint="eastAsia" w:eastAsia="SimSun"/></w:rPr><w:t>漢字</w:t></w:r></w:p>"#;
-    let d = wordcraft_docx::read(&docx(body, &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
+    let d = tabdocs_docx::read(&docx(body, &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
     assert_eq!(d.styles.get("Normal").unwrap().chr.font, None);
     let ps = paras(&d);
     let font = |p: &Paragraph| d.styles.resolve_char(p.props.style.as_deref(), &p.runs[0].props).font;
@@ -637,8 +584,8 @@ fn bare_break_directly_in_paragraph() {
     let body = r#"<w:p><w:r><w:t>First</w:t></w:r><w:br/><w:r><w:t>Second</w:t></w:r><w:cr/><w:br w:type="page"/><w:r><w:t>Third</w:t></w:r></w:p>"#;
     let d = read_body(body);
     assert_eq!(paras(&d)[0].text, "First\nSecond\n\u{C}Third");
-    let out = wordcraft_docx::write(&d).unwrap();
-    let d2 = wordcraft_docx::read(&out).unwrap();
+    let out = tabdocs_docx::write(&d).unwrap();
+    let d2 = tabdocs_docx::read(&out).unwrap();
     assert_eq!(paras(&d2)[0].text, "First\nSecond\n\u{C}Third");
 }
 
@@ -683,10 +630,10 @@ fn absolute_vml_text_box_in_header_floats() {
         // Not absolutely positioned: still inline.
         assert_eq!(f3.wrap, Wrap::Inline);
     };
-    let d = wordcraft_docx::read(&bytes).unwrap();
+    let d = tabdocs_docx::read(&bytes).unwrap();
     check(&d);
     // Saved (as DrawingML anchors) and read back, the boxes keep their placement.
-    check(&wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap());
+    check(&tabdocs_docx::read(&tabdocs_docx::write(&d).unwrap()).unwrap());
 }
 
 #[test]
@@ -698,29 +645,4 @@ fn hostile_vml_style_values_stay_finite() {
     assert_eq!(float.wrap, Wrap::InFrontOfText);
     assert!([*w, *h, float.x, float.y, float.dist, float.dist_top].iter().all(|v| v.is_finite()), "{w} {h} {float:?}");
     assert_eq!((float.h_align, float.dist, float.dist_top), (None, 0.0, 1584.0));
-}
-
-/// A group as Word saves one (in `mc:AlternateContent`, needing `wpg`): its members' space
-/// starts at `a:chOff`, and a nested group is flattened into it through its own transform.
-#[test]
-fn word_group_with_nested_group() {
-    let body = r#"<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wpg"><w:drawing><wp:anchor behindDoc="0" distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="1" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="2540000" cy="1270000"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapSquare wrapText="bothSides"/><wp:docPr id="1" name="Group 1"/><wp:cNvGraphicFramePr/>
-<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="1270000"/><a:chOff x="127000" y="127000"/><a:chExt cx="2540000" cy="1270000"/></a:xfrm></wpg:grpSpPr>
-<wps:wsp><wps:cNvPr id="2" name="Rectangle 2"/><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="127000" y="127000"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp>
-<wpg:grpSp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="1397000" y="762000"/><a:ext cx="1270000" cy="635000"/><a:chOff x="0" y="0"/><a:chExt cx="2540000" cy="1270000"/></a:xfrm></wpg:grpSpPr>
-<wps:wsp><wps:cNvPr id="3" name="Oval 3"/><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="254000" y="254000"/><a:ext cx="508000" cy="254000"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp>
-</wpg:grpSp></wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict/></mc:Fallback></mc:AlternateContent></w:r></w:p>"#;
-    let d = read_body(body);
-    let p = paras(&d);
-    let InlineObject::Group { w, h, float, ch_w, ch_h, children } = &p[0].objects[0] else { panic!("{:?}", p[0].objects) };
-    assert_eq!((*w, *h, *ch_w, *ch_h), (200.0, 100.0, 200.0, 100.0));
-    assert_eq!(float.wrap, Wrap::Square);
-    let got: Vec<(f32, f32, ShapeKind, f32, f32)> = children
-        .iter()
-        .map(|c| match &c.obj {
-            InlineObject::Shape { kind, w, h, .. } => (c.x, c.y, *kind, *w, *h),
-            o => panic!("{o:?}"),
-        })
-        .collect();
-    assert_eq!(got, [(0.0, 0.0, ShapeKind::Rectangle, 100.0, 50.0), (110.0, 60.0, ShapeKind::Ellipse, 20.0, 10.0)]);
 }

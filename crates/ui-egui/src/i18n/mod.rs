@@ -47,7 +47,7 @@ pub struct LangInfo {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 9] = [
+pub static LANGUAGES: [LangInfo; 7] = [
     LangInfo { code: "en", name: "English", source: "", prefer_hans: false, catalog: OnceLock::new() },
     // Simplified Chinese; `zh`, `zh-CN`, `zh-SG` and `zh-Hans-*` resolve here (see `candidates`).
     LangInfo { code: "zh-hans", name: "简体中文", source: include_str!("zh-hans.tsv"), prefer_hans: true, catalog: OnceLock::new() },
@@ -60,12 +60,6 @@ pub static LANGUAGES: [LangInfo; 9] = [
     // Brazilian Portuguese; `pt-BR` and `pt-BR-*` resolve here. Plain `pt` and `pt-PT` have no
     // catalog yet (the European vocabulary differs), so they stay in English.
     LangInfo { code: "pt-br", name: "Português (Brasil)", source: include_str!("pt-br.tsv"), prefer_hans: false, catalog: OnceLock::new() },
-    // Serbian, Cyrillic script (the default per BCP 47 when no script is given); `sr`, `sr-RS`,
-    // `sr-Cyrl-*` resolve here.
-    LangInfo { code: "sr", name: "Српски", source: include_str!("sr.tsv"), prefer_hans: false, catalog: OnceLock::new() },
-    // Serbian, Latin script; `sr-Latn-*` resolves here (see `candidates`'s generic prefix
-    // matching — no special-casing needed, unlike Chinese's script-by-region fallback).
-    LangInfo { code: "sr-latn", name: "Srpski (latinica)", source: include_str!("sr-latn.tsv"), prefer_hans: false, catalog: OnceLock::new() },
 ];
 
 impl LangInfo {
@@ -111,11 +105,6 @@ impl Lang {
 
     pub fn prefers_hans(self) -> bool {
         self.0.prefer_hans
-    }
-
-    /// Is the interface written in CJK script (its own name is), so it needs a CJK face?
-    pub fn uses_cjk(self) -> bool {
-        self.0.name.chars().any(|c| ('\u{2E80}'..='\u{9FFF}').contains(&c) || ('\u{AC00}'..='\u{D7AF}').contains(&c))
     }
 
     /// A language by its exact code (any case).
@@ -175,7 +164,7 @@ pub fn lang_from_tag(tag: &str) -> Option<Lang> {
     cands.iter().find_map(|c| Lang::from_code(c))
 }
 
-/// The first of the system's preferred languages WordCraft has, in the user's order: someone
+/// The first of the system's preferred languages TabDocs has, in the user's order: someone
 /// who prefers French, then Japanese, gets Japanese rather than English.
 pub fn first_supported<'a>(tags: impl IntoIterator<Item = &'a str>) -> Option<Lang> {
     tags.into_iter().find_map(lang_from_tag)
@@ -194,7 +183,7 @@ pub fn system_lang() -> Lang {
 fn detect_system_lang() -> Lang {
     // An explicit override, then the platform's preferred UI languages (Windows display language,
     // macOS preferred languages, `LC_ALL`/`LC_MESSAGES`/`LANG` on Unix, the browser on the web).
-    if let Some(l) = std::env::var("WORDCRAFT_LANGUAGE").ok().and_then(|v| lang_from_tag(&v)) {
+    if let Some(l) = std::env::var("TABDOCS_LANGUAGE").ok().and_then(|v| lang_from_tag(&v)) {
         return l;
     }
     let tags: Vec<String> = sys_locale::get_locales().take(16).collect();

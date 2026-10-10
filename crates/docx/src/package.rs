@@ -32,17 +32,14 @@ pub mod rt {
     pub const IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
     pub const HYPERLINK: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
     pub const VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
-    pub const CHART: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
-    pub const DIAGRAM_DATA: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData";
-    pub const DIAGRAM_DRAWING: &str = "http://schemas.microsoft.com/office/2007/relationships/diagramDrawing";
 }
 
 /// `Document::passthrough` key for a macro project, kept as opaque bytes (never parsed or run).
 pub const VBA_PROJECT_PART: &str = "word/vbaProject.bin";
 /// `Document::passthrough` key listing the parts the project relates to (VBA data, signatures…),
 /// one `relationship type \t part name \t content type` line each; each part's bytes are kept
-/// under its part name. Not a package part: WordCraft's own bookkeeping.
-pub const VBA_RELATED: &str = "wordcraft:vbaProject.related";
+/// under its part name. Not a package part: TabDocs's own bookkeeping.
+pub const VBA_RELATED: &str = "tabdocs:vbaProject.related";
 /// Most parts we carry along with a macro project.
 pub const MAX_VBA_RELATED: usize = 64;
 

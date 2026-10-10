@@ -38,7 +38,6 @@ pub fn key_name(k: Key) -> Option<&'static str> {
         Key::F3 => "F3",
         Key::F5 => "F5",
         Key::F7 => "F7",
-        Key::F8 => "F8",
         Key::F9 => "F9",
         Key::F12 => "F12",
         Key::A => "A",
@@ -93,6 +92,22 @@ fn combo(m: Modifiers, key: &str, with_shift: bool) -> String {
 
 /// Find and run the command bound to this key. Returns true if handled.
 fn dispatch(app: &mut WordApp, key: Key, m: Modifiers) -> bool {
+    // Reopen most recently closed on-disk document, including while editing in the canvas.
+    if key == Key::T && m.ctrl && m.shift && !m.alt {
+        let _ = app.run("ui.reopenClosedDocument", json!({}));
+        return true;
+    }
+    // Ctrl+Tab / Ctrl+Shift+Tab cycle through open documents (including on macOS, where
+    // Command+Tab belongs to the operating system's application switcher).
+    if key == Key::Tab && m.ctrl && !m.alt {
+        let count = app.document_tabs().len();
+        if count > 1 {
+            let current = app.active_document_tab();
+            let next = if m.shift { (current + count - 1) % count } else { (current + 1) % count };
+            app.switch_document_tab(next);
+        }
+        return true;
+    }
     let Some(name) = key_name(key) else { return false };
     let reg = app.session.registry.clone();
     if let Some(spec) = reg.by_shortcut(&combo(m, name, true)) {
@@ -133,13 +148,6 @@ fn equation_key(app: &mut WordApp, key: Key, m: Modifiers) -> bool {
     true
 }
 
-/// Whether releasing `key` with `modifiers` is the plain Paste shortcut (Mod+V or the Paste
-/// key) — not Mod+Shift+V (Paste Formatting) or Mod+Alt+V (Paste Special) — so a clipboard
-/// picture may be pasted on it (#45).
-fn is_paste_release(key: Key, modifiers: egui::Modifiers) -> bool {
-    (modifiers.command || key == Key::Paste) && !modifiers.alt && !modifiers.shift
-}
-
 /// Events for the focused canvas: text, editing keys, clipboard, IME. While keytips are showing
 /// every key belongs to them (letters pick badges, Escape cancels), so nothing here runs.
 pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
@@ -148,22 +156,11 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
     }
     let events = ctx.input(|i| i.events.clone());
     for e in events {
-        if let egui::Event::Paste(t) = &e {
-            app.canvas.pasted = true;
-            // Copied picture files arrive as their paths: insert the pictures (#45).
-            if app.session.math.is_none() && !ctx.input(|i| i.modifiers.alt) && crate::paste_picture::paste_named_files(app, t) {
-                continue;
-            }
-        }
-        // Desktop: Mod+V with no text on the clipboard sends no paste event, only the key's
-        // release; paste the clipboard's picture then (#45). A paste event before the release
-        // means it was text. (The web reads pasted pictures itself.)
-        if let egui::Event::Key { key: key @ (Key::V | Key::Paste), pressed: false, modifiers, .. } = &e {
-            let paste_keys = is_paste_release(*key, *modifiers);
-            let pasted = std::mem::take(&mut app.canvas.pasted);
-            if !pasted && paste_keys && app.session.math.is_none() && app.services.clipboard_picture.is_some() {
-                let _ = app.run("edit.paste", json!({}));
-            }
+        if let egui::Event::Key { key, pressed: true, modifiers, .. } = &e
+            && modifiers.ctrl && !modifiers.alt
+            && (*key == Key::Tab || (*key == Key::T && modifiers.shift))
+        {
+            dispatch(app, *key, *modifiers);
             continue;
         }
         // Editing an equation: text and editing keys go into it.
@@ -211,13 +208,7 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
                 }
             }
             egui::Event::Paste(t) => {
-                // Mod+Alt+V arrives as a paste too (the shell reads the clipboard): Paste Special.
-                let m = ctx.input(|i| i.modifiers);
-                let id = match (m.alt, m.shift) {
-                    (true, true) => "edit.pasteText",
-                    (true, false) => "edit.pasteSpecial",
-                    _ => "edit.paste",
-                };
+                let id = if ctx.input(|i| i.modifiers.shift && i.modifiers.alt) { "edit.pasteText" } else { "edit.paste" };
                 let _ = app.run(id, json!({"text": t}));
             }
             egui::Event::Copy | egui::Event::Cut => {
@@ -241,13 +232,13 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
                 if key == Key::Escape
                     && crate::canvas::in_text_box(app)
                     && app.session.sel.is_collapsed()
-                    && let wordcraft_doc::StoryRef::Part(id) = app.session.sel.focus.story
+                    && let tabdocs_doc::StoryRef::Part(id) = app.session.sel.focus.story
                     && let Some(pos) = app.session.doc.text_box_anchor(id)
                 {
                     let _ = app.run("caret.set", json!({"pos": pos}));
                     continue;
                 }
-                if key == Key::Escape && matches!(app.session.sel.focus.story, wordcraft_doc::StoryRef::Part(_)) && app.session.sel.is_collapsed() {
+                if key == Key::Escape && matches!(app.session.sel.focus.story, tabdocs_doc::StoryRef::Part(_)) && app.session.sel.is_collapsed() {
                     let _ = app.run("insert.closeHeader", json!({}));
                     continue;
                 }
@@ -266,24 +257,9 @@ pub fn global_shortcuts(app: &mut WordApp, ctx: &egui::Context) {
     let events = ctx.input(|i| i.events.clone());
     for e in events {
         if let egui::Event::Key { key, pressed: true, modifiers, .. } = e
-            && (modifiers.command || matches!(key, Key::F3 | Key::F5 | Key::F7 | Key::F9 | Key::F12))
+            && (modifiers.command || (modifiers.ctrl && (key == Key::Tab || (key == Key::T && modifiers.shift))) || matches!(key, Key::F3 | Key::F5 | Key::F7 | Key::F9 | Key::F12))
         {
             dispatch(app, key, modifiers);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_plain_paste_releases_paste_a_clipboard_picture() {
-        let m = |command, shift, alt| egui::Modifiers { command, shift, alt, ..Default::default() };
-        assert!(is_paste_release(Key::V, m(true, false, false)), "Mod+V");
-        assert!(is_paste_release(Key::Paste, m(false, false, false)), "the Paste key");
-        assert!(!is_paste_release(Key::V, m(true, true, false)), "Mod+Shift+V is Paste Formatting");
-        assert!(!is_paste_release(Key::V, m(true, false, true)), "Mod+Alt+V is Paste Special");
-        assert!(!is_paste_release(Key::V, m(false, false, false)), "a plain V");
     }
 }

@@ -1,4 +1,4 @@
-//! WordCraft engine: the editing session and its commands.
+//! TabDocs engine: the editing session and its commands.
 //!
 //! **Everything is a command.** Each user-visible action is a [`CommandSpec`] with a stable id
 //! (`format.bold`, `insert.table`), a label, the ribbon/menu location, a default shortcut, a
@@ -19,10 +19,10 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-pub use session::{ColumnBlock, EditSnapshot, FindState, MathEdit, Prefs, Selection, Session, ViewState};
-pub use wordcraft_doc as doc;
-pub use wordcraft_layout as layout;
-pub use wordcraft_render as render;
+pub use session::{EditSnapshot, FindState, MathEdit, Prefs, Selection, Session, ViewState};
+pub use tabdocs_doc as doc;
+pub use tabdocs_layout as layout;
+pub use tabdocs_render as render;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum CmdError {
@@ -36,8 +36,8 @@ pub enum CmdError {
     Failed(String),
 }
 
-impl From<wordcraft_doc::DocError> for CmdError {
-    fn from(e: wordcraft_doc::DocError) -> Self {
+impl From<tabdocs_doc::DocError> for CmdError {
+    fn from(e: tabdocs_doc::DocError) -> Self {
         CmdError::Failed(e.to_string())
     }
 }

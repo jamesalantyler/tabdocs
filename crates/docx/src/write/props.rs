@@ -1,6 +1,6 @@
 //! Property writers, in ECMA-376 schema element order.
 
-use wordcraft_doc::props::{
+use tabdocs_doc::props::{
     Align, Border, BorderStyle, Borders, CellProps, CharProps, HeightRule, Highlight, LineSpacing, ParaProps, RowProps, TabAlign, TabLeader,
     TableFloat, TableLook, TableProps, TextColor, VAlign, VMerge, VertAlign,
 };
@@ -17,7 +17,7 @@ fn toggle(w: &mut W, name: &str, v: Option<bool>) {
 }
 
 fn round(v: f32) -> i64 {
-    let v = wordcraft_geom::finite(v);
+    let v = tabdocs_geom::finite(v);
     v.round().clamp(-1e9, 1e9) as i64
 }
 
@@ -61,12 +61,12 @@ pub fn rpr_inner(w: &mut W, c: &CharProps) {
         w.val("w:w", &n(round(s.clamp(1.0, 600.0))));
     }
     if let Some(k) = c.kern {
-        w.val("w:kern", &n(wordcraft_geom::to_half_points(k.clamp(0.0, 1638.0))));
+        w.val("w:kern", &n(tabdocs_geom::to_half_points(k.clamp(0.0, 1638.0))));
     }
     if let Some(p) = c.position {
-        w.val("w:position", &n(wordcraft_geom::to_half_points(p.clamp(-1584.0, 1584.0))));
+        w.val("w:position", &n(tabdocs_geom::to_half_points(p.clamp(-1584.0, 1584.0))));
     }
-    let half = |s: f32| n(wordcraft_geom::to_half_points(s.clamp(1.0, 1638.0)).max(2));
+    let half = |s: f32| n(tabdocs_geom::to_half_points(s.clamp(1.0, 1638.0)).max(2));
     if let Some(s) = c.size {
         w.val("w:sz", &half(s));
     }
@@ -230,12 +230,6 @@ pub fn ppr_inner(w: &mut W, p: &ParaProps, framed: bool) {
         w.close("w:tabs");
     }
     toggle(w, "w:suppressAutoHyphens", p.suppress_hyphens);
-    toggle(w, "w:kinsoku", p.kinsoku);
-    toggle(w, "w:wordWrap", p.word_wrap);
-    toggle(w, "w:overflowPunct", p.overflow_punct);
-    toggle(w, "w:topLinePunct", p.top_line_punct);
-    toggle(w, "w:autoSpaceDE", p.auto_space_de);
-    toggle(w, "w:autoSpaceDN", p.auto_space_dn);
     toggle(w, "w:bidi", p.bidi);
     if p.space_before.is_some() || p.space_after.is_some() || p.line_spacing.is_some() {
         let before = p.space_before.map(|v| twips(v.max(0.0)));
@@ -389,10 +383,9 @@ pub fn trpr(w: &mut W, r: &RowProps) {
 
 pub fn tcpr(w: &mut W, c: &CellProps) {
     w.open("w:tcPr", &[]);
-    match (c.width, c.width_pct) {
-        (Some(v), _) => w.empty("w:tcW", &[("w:w", &twips(v.max(0.0))), ("w:type", "dxa")]),
-        (None, Some(p)) => w.empty("w:tcW", &[("w:w", &n((p.clamp(0.0, 100.0) * 50.0).round() as i64)), ("w:type", "pct")]),
-        (None, None) => w.empty("w:tcW", &[("w:w", "0"), ("w:type", "auto")]),
+    match c.width {
+        Some(v) => w.empty("w:tcW", &[("w:w", &twips(v.max(0.0))), ("w:type", "dxa")]),
+        None => w.empty("w:tcW", &[("w:w", "0"), ("w:type", "auto")]),
     }
     if c.span > 1 {
         w.val("w:gridSpan", &n(c.span.min(63) as i64));
@@ -414,8 +407,8 @@ pub fn tcpr(w: &mut W, c: &CellProps) {
     if let Some(m) = &c.margins {
         margins(w, "w:tcMar", m);
     }
-    if c.text_direction.is_turned() {
-        w.val("w:textDirection", c.text_direction.ooxml());
+    if c.vertical_text {
+        w.val("w:textDirection", "btLr");
     }
     match c.valign {
         VAlign::Top => {}
@@ -427,7 +420,7 @@ pub fn tcpr(w: &mut W, c: &CellProps) {
 
 /// `w:tblpPr` and `w:tblOverlap` for a floating table.
 fn table_float(w: &mut W, f: &TableFloat) {
-    use wordcraft_doc::para::Anchor;
+    use tabdocs_doc::para::Anchor;
     let rel = |a: Anchor, text: &'static str| match a {
         Anchor::Page => "page",
         Anchor::Margin => "margin",

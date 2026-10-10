@@ -2,10 +2,10 @@
 //! and labels.
 
 use serde_json::{Value, json};
-use wordcraft_doc::para::InlineObject;
-use wordcraft_doc::props::{Align, CharProps};
-use wordcraft_doc::section::SectionProps;
-use wordcraft_doc::{Block, Document, Paragraph, Pos, StoryRef, Table, para_block};
+use tabdocs_doc::para::InlineObject;
+use tabdocs_doc::props::{Align, CharProps};
+use tabdocs_doc::section::SectionProps;
+use tabdocs_doc::{Block, Document, Paragraph, Pos, StoryRef, Table, para_block};
 
 use super::{delete_selection, sel_result};
 use crate::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
@@ -25,38 +25,25 @@ fn has_recipients(s: &Session) -> Option<&'static str> {
     if s.merge.rows.is_empty() { Some("select recipients first") } else { None }
 }
 
-/// Edit Recipient List needs a list to edit (fields, even with no entries yet).
-fn has_list(s: &Session) -> Option<&'static str> {
-    if s.merge.headers.is_empty() && s.merge.rows.is_empty() { Some("select recipients first") } else { None }
-}
-
-/// The kinds of document Start Mail Merge makes. `normal` is an ordinary document again; only
-/// `directory` changes how Finish & Merge joins the records (no page break between them).
-pub const MERGE_KINDS: [&str; 6] = ["letters", "emails", "envelopes", "labels", "directory", "normal"];
-
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("mailings.start", "Start Mail Merge", "Mailings › Start Mail Merge", |s, v| {
-            let kind = p::str(v, "kind").unwrap_or("letters").trim().to_ascii_lowercase();
-            if !MERGE_KINDS.contains(&kind.as_str()) {
-                return Err(CmdError::Params(format!("`kind` must be one of {}", MERGE_KINDS.join(", "))));
-            }
-            s.merge.kind = kind;
+            s.merge.kind = p::str(v, "kind").unwrap_or("letters").to_string();
             Ok(json!({"kind": s.merge.kind}))
         })
-        .params(r#"{"kind": "letters|emails|envelopes|labels|directory|normal"}"#)
+        .params(r#"{"kind": "letters|emails|envelopes|labels|directory"}"#)
         .pure(),
         CommandSpec::new("mailings.recipients", "Select Recipients", "Mailings › Start Mail Merge", recipients)
-            .params(r#"{"csv"?: string, "path"?: string, "rows"?: [{field: value}] | [[value]], "fields"?: [string] (column order; required with array rows)}"#)
+            .params(r#"{"csv"?: string, "path"?: string, "rows"?: [{field: value}]}"#)
             .pure(),
         CommandSpec::new("mailings.editRecipients", "Edit Recipient List", "Mailings › Start Mail Merge", |s, v| {
-            if v.get("rows").and_then(Value::as_array).is_some() {
-                return recipients(s, &json!({"rows": v.get("rows"), "fields": v.get("fields")}));
+            if let Some(rows) = v.get("rows").and_then(Value::as_array) {
+                let objs: Vec<Value> = rows.clone();
+                return recipients(s, &json!({"rows": objs}));
             }
             Ok(json!({"headers": s.merge.headers, "rows": s.merge.rows}))
         })
-        .params(r#"{"rows"?: [{field: value}] | [[value]], "fields"?: [string]}"#)
-        .when(has_list)
+        .params(r#"{"rows"?: [{field: value}]}"#)
         .pure(),
         CommandSpec::new("mailings.insertField", "Insert Merge Field", "Mailings › Write & Insert Fields", |s, v| {
             let f = p::req_str(v, "field")?.to_string();
@@ -199,53 +186,28 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
-/// Most records and fields a recipient list keeps.
-const MAX_RECORDS: usize = 100_000;
-const MAX_FIELDS: usize = 1_000;
-
-fn cell(x: &Value) -> String {
-    match x {
-        Value::Null => String::new(),
-        Value::String(t) => t.clone(),
-        other => other.to_string(),
-    }
-}
-
-/// A recipient table from `rows` (objects keyed by field, or arrays in `fields` order). Without
-/// `fields`, the columns are the objects' keys.
-fn table_from_rows(fields: Option<&Vec<Value>>, arr: &[Value]) -> Result<(Vec<String>, Vec<Vec<String>>), CmdError> {
-    let headers: Vec<String> = match fields {
-        Some(f) => f.iter().take(MAX_FIELDS).map(|h| cell(h).trim().to_string()).collect(),
-        None => {
-            if arr.iter().any(Value::is_array) {
-                return Err(CmdError::Params("`fields` is required when `rows` are arrays".into()));
-            }
-            let mut headers: Vec<String> = Vec::new();
-            for o in arr.iter().filter_map(Value::as_object) {
+fn recipients(s: &mut Session, v: &Value) -> CmdResult {
+    let (headers, rows) = if let Some(arr) = v.get("rows").and_then(Value::as_array) {
+        let mut headers: Vec<String> = Vec::new();
+        for r in arr {
+            if let Some(o) = r.as_object() {
                 for k in o.keys() {
-                    if !headers.contains(k) && headers.len() < MAX_FIELDS {
+                    if !headers.contains(k) {
                         headers.push(k.clone());
                     }
                 }
             }
-            headers
         }
-    };
-    let rows = arr
-        .iter()
-        .take(MAX_RECORDS)
-        .filter_map(|r| match r {
-            Value::Array(cells) => Some((0..headers.len()).map(|i| cells.get(i).map(cell).unwrap_or_default()).collect()),
-            Value::Object(o) => Some(headers.iter().map(|h| o.get(h).map(cell).unwrap_or_default()).collect()),
-            _ => None,
-        })
-        .collect();
-    Ok((headers, rows))
-}
-
-fn recipients(s: &mut Session, v: &Value) -> CmdResult {
-    let (headers, rows) = if let Some(arr) = v.get("rows").and_then(Value::as_array) {
-        table_from_rows(v.get("fields").and_then(Value::as_array), arr)?
+        let rows = arr
+            .iter()
+            .map(|r| {
+                headers
+                    .iter()
+                    .map(|h| r.get(h).map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+        (headers, rows)
     } else {
         let text = if let Some(c) = p::str(v, "csv") {
             c.to_string()
@@ -467,7 +429,7 @@ fn merge_block(s: &Session, b: &mut Block, row: usize) {
                 let Some(InlineObject::Field { instr, .. }) = p.object_at(off).cloned() else { continue };
                 if let Some(val) = eval(s, &instr, row) {
                     let props = p.props_of_char(off).clone();
-                    let _ = p.delete(off, off + wordcraft_doc::para::OBJ.len_utf8());
+                    let _ = p.delete(off, off + tabdocs_doc::para::OBJ.len_utf8());
                     let _ = p.insert_text(off, &val, &props);
                 }
             }
@@ -536,12 +498,12 @@ fn labels(s: &mut Session, v: &Value) -> CmdResult {
     d.last_section.margin_right = 13.5;
     let mut t = Table::new(rows, cols, 189.0 * cols as f32);
     t.props.style = None;
-    t.props.borders = Some(wordcraft_doc::props::Borders::default());
+    t.props.borders = Some(tabdocs_doc::props::Borders::default());
     t.props.fixed = true;
     let mut k = 0usize;
     for r in &mut t.rows {
         r.props.height = Some(72.0);
-        r.props.height_rule = wordcraft_doc::props::HeightRule::Exact;
+        r.props.height_rule = tabdocs_doc::props::HeightRule::Exact;
         for c in &mut r.cells {
             let content = if from_rec {
                 let rec = address_block(s, k);
@@ -550,7 +512,7 @@ fn labels(s: &mut Session, v: &Value) -> CmdResult {
             } else {
                 text.clone()
             };
-            c.props.valign = wordcraft_doc::props::VAlign::Center;
+            c.props.valign = tabdocs_doc::props::VAlign::Center;
             c.blocks = content
                 .split('\n')
                 .map(|l| {
@@ -600,43 +562,6 @@ mod tests {
         let t = s.doc.plain_text(StoryRef::Body);
         assert!(t.contains("See you in London") && t.contains("Dear Alan Turing,"), "{t}");
         assert_eq!(s.layout().pages.len(), 2);
-    }
-
-    /// A typed list (#240) keeps its column order, and rows may be arrays in that order.
-    #[test]
-    fn recipients_from_fields_and_array_rows() {
-        let mut s = Session::new(Document::new());
-        let r = s
-            .run("mailings.recipients", &json!({"fields": ["Last Name", " City ", "Age"], "rows": [["Lovelace", "London", 36], ["Turing"], 7]}))
-            .unwrap();
-        assert_eq!(r, json!({"fields": ["Last Name", "City", "Age"], "records": 2}));
-        assert_eq!(
-            s.merge.rows,
-            vec![vec!["Lovelace".to_string(), "London".into(), "36".into()], vec!["Turing".into(), String::new(), String::new()]]
-        );
-        // Objects follow `fields` too; missing and null cells are blank.
-        s.run("mailings.editRecipients", &json!({"fields": ["Name", "City"], "rows": [{"City": "Paris", "Name": null}]})).unwrap();
-        assert_eq!(s.merge.headers, vec!["Name", "City"]);
-        assert_eq!(s.merge.rows, vec![vec![String::new(), "Paris".to_string()]]);
-        // Array rows need the field names.
-        let err = s.run("mailings.recipients", &json!({"rows": [["Ada"]]})).unwrap_err();
-        assert!(matches!(err, CmdError::Params(_)), "{err}");
-        assert!(s.ui_requests.is_empty(), "programmatic calls never open dialogs");
-    }
-
-    /// Start Mail Merge takes only the kinds it knows; Edit Recipient List needs a list.
-    #[test]
-    fn merge_kinds_and_edit_list_needs_recipients() {
-        let mut s = Session::new(Document::new());
-        for k in MERGE_KINDS {
-            assert_eq!(s.run("mailings.start", &json!({"kind": k})).unwrap(), json!({"kind": k}));
-        }
-        assert_eq!(s.run("mailings.start", &json!({"kind": " Directory "})).unwrap(), json!({"kind": "directory"}));
-        assert!(matches!(s.run("mailings.start", &json!({"kind": "fax"})), Err(CmdError::Params(_))));
-        assert_eq!(s.merge.kind, "directory", "a rejected kind leaves the current one");
-        assert!(matches!(s.run("mailings.editRecipients", &json!({})), Err(CmdError::Disabled(_))));
-        s.run("mailings.recipients", &json!({"csv": "Name\nAda"})).unwrap();
-        assert_eq!(s.run("mailings.editRecipients", &json!({})).unwrap(), json!({"headers": ["Name"], "rows": [["Ada"]]}));
     }
 
     #[test]

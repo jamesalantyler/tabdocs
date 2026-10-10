@@ -1,8 +1,8 @@
 //! Review tab: comments, track changes, word count, spelling (via the proofing hook).
 
 use serde_json::{Value, json};
-use wordcraft_doc::para::InlineObject;
-use wordcraft_doc::{Comment, Paragraph, PartKind, Pos, StoryRef, para_block};
+use tabdocs_doc::para::InlineObject;
+use tabdocs_doc::{Comment, Paragraph, PartKind, Pos, StoryRef, para_block};
 
 use super::{now_iso, pos_json, sel_result};
 use crate::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
@@ -11,7 +11,6 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("review.newComment", "New Comment", "Review › Comments", new_comment).key("Mod+Alt+M").params(r#"{"text": string}"#),
         CommandSpec::new("review.reply", "Reply", "Review › Comments", reply).params(r#"{"id": n, "text": string}"#),
-        CommandSpec::new("review.editComment", "Edit Comment", "Review › Comments", edit_comment).params(r#"{"id": n, "text": string}"#),
         CommandSpec::new("review.deleteComment", "Delete", "Review › Comments", delete_comment).params(r#"{"id"?: n, "all"?: bool}"#),
         CommandSpec::new("review.resolveComment", "Resolve", "Review › Comments", |s, v| {
             let id = p::u64(v, "id").map(|x| x as u32).or_else(|| comment_at_caret(s)).ok_or_else(|| CmdError::Params("`id` required".into()))?;
@@ -56,7 +55,7 @@ pub fn specs() -> Vec<CommandSpec> {
             if w.is_empty() {
                 return Err(CmdError::Params("no word".into()));
             }
-            wordcraft_proof::add_word(&w);
+            tabdocs_proof::add_word(&w);
             s.relayout();
             Ok(json!({"added": w}))
         })
@@ -69,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     .map(|(a, b, _)| s.doc.para_at(&a).and_then(|p| p.text.get(a.off..b.off).map(str::to_string)).unwrap_or_default())
                     .unwrap_or_default(),
             };
-            wordcraft_proof::add_word(&w);
+            tabdocs_proof::add_word(&w);
             s.relayout();
             Ok(json!({"ignored": w}))
         })
@@ -133,16 +132,6 @@ fn reply(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"id": id}))
 }
 
-/// Replace a comment's (or reply's) text; each line becomes a paragraph.
-fn edit_comment(s: &mut Session, v: &Value) -> CmdResult {
-    let id = p::u64(v, "id").and_then(|x| u32::try_from(x).ok()).ok_or_else(|| CmdError::Params("`id` required".into()))?;
-    let text = p::req_str(v, "text")?;
-    let part = s.doc.comments.get(&id).map(|c| c.part).ok_or_else(|| CmdError::Params("no such comment".into()))?;
-    let blocks = text.split('\n').take(10_000).map(|l| para_block(Paragraph::with_text(l.trim_end_matches('\r'), Default::default()))).collect();
-    s.doc.set_story(StoryRef::Part(part), blocks)?;
-    Ok(json!({"id": id}))
-}
-
 /// Comment anchored around the caret.
 fn comment_at_caret(s: &Session) -> Option<u32> {
     let f = &s.sel.focus;
@@ -184,7 +173,7 @@ fn remove_anchors(s: &mut Session, ids: &[u32]) -> Result<(), CmdError> {
             }
             let para = s.doc.para_mut(story, &path)?;
             for o in offs.into_iter().rev() {
-                para.delete(o, o + wordcraft_doc::para::OBJ.len_utf8())?;
+                para.delete(o, o + tabdocs_doc::para::OBJ.len_utf8())?;
             }
         }
     }
@@ -260,7 +249,7 @@ fn nav_comment(s: &mut Session, dir: i32) -> CmdResult {
 fn resolve_para(
     s: &mut Session,
     story: StoryRef,
-    path: &wordcraft_doc::Path,
+    path: &tabdocs_doc::Path,
     from: usize,
     to: usize,
     mark: bool,
@@ -301,7 +290,7 @@ fn resolve_para(
 
 /// The tracked paragraph mark at the end of the paragraph at `path`, as a change range: from
 /// the paragraph's end to the start of the next paragraph (or the end itself when none follows).
-fn mark_change(s: &Session, story: StoryRef, path: &wordcraft_doc::Path) -> Option<(Pos, Pos, &'static str, Option<u32>)> {
+fn mark_change(s: &Session, story: StoryRef, path: &tabdocs_doc::Path) -> Option<(Pos, Pos, &'static str, Option<u32>)> {
     let p = s.doc.para(story, path)?;
     let kind = if p.mark.ins.is_some() {
         "insert"
@@ -419,7 +408,7 @@ fn word_count(s: &mut Session, v: &Value) -> CmdResult {
     } else {
         s.selected_text()
     };
-    let words = wordcraft_doc::count_words(&text);
+    let words = tabdocs_doc::count_words(&text);
     let chars = text.chars().filter(|c| *c != '\n').count();
     let chars_no_spaces = text.chars().filter(|c| !c.is_whitespace()).count();
     let paragraphs = text.split('\n').filter(|l| !l.trim().is_empty()).count();
@@ -429,7 +418,7 @@ fn word_count(s: &mut Session, v: &Value) -> CmdResult {
             .iter()
             .flat_map(|p| p.items.iter())
             .map(|it| {
-                if let wordcraft_layout::Placed::Lines { l0, l1, story, .. } = it
+                if let tabdocs_layout::Placed::Lines { l0, l1, story, .. } = it
                     && stories.contains(story)
                 {
                     l1 - l0
@@ -447,11 +436,11 @@ fn word_count(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// Issues (spelling + grammar) in one paragraph as positions.
-fn para_issues(s: &Session, story: StoryRef, path: &wordcraft_doc::Path) -> Vec<(Pos, Pos, wordcraft_proof::Issue)> {
+fn para_issues(s: &Session, story: StoryRef, path: &tabdocs_doc::Path) -> Vec<(Pos, Pos, tabdocs_proof::Issue)> {
     let Some(p) = s.doc.para(story, path) else { return Vec::new() };
-    let text = wordcraft_layout::para::proof_text(p);
-    let mut v: Vec<wordcraft_proof::Issue> = wordcraft_proof::check_spelling(&text);
-    v.extend(wordcraft_proof::check_grammar(&text));
+    let text = tabdocs_layout::para::proof_text(p);
+    let mut v: Vec<tabdocs_proof::Issue> = tabdocs_proof::check_spelling(&text);
+    v.extend(tabdocs_proof::check_grammar(&text));
     v.sort_by_key(|i| i.start);
     v.into_iter()
         .filter(|i| !p.run_ranges().any(|(r, c)| r.start < i.end && i.start < r.end && (c.no_proof == Some(true) || c.link.is_some())))
@@ -460,14 +449,14 @@ fn para_issues(s: &Session, story: StoryRef, path: &wordcraft_doc::Path) -> Vec<
 }
 
 /// The issue under a position.
-fn issue_at(s: &Session, at: &Pos) -> Option<(Pos, Pos, wordcraft_proof::Issue)> {
+fn issue_at(s: &Session, at: &Pos) -> Option<(Pos, Pos, tabdocs_proof::Issue)> {
     para_issues(s, at.story, &at.path).into_iter().find(|(a, b, _)| a.off <= at.off && at.off <= b.off)
 }
 
-fn issue_json(s: &Session, a: &Pos, b: &Pos, i: &wordcraft_proof::Issue) -> Value {
+fn issue_json(s: &Session, a: &Pos, b: &Pos, i: &tabdocs_proof::Issue) -> Value {
     let word = s.doc.para_at(a).and_then(|p| p.text.get(a.off..b.off)).unwrap_or("").to_string();
-    let sugg = if i.kind == wordcraft_proof::IssueKind::Spelling { wordcraft_proof::suggest(&word, 6) } else { i.suggestions.clone() };
-    json!({"start": pos_json(a), "end": pos_json(b), "text": word, "kind": if i.kind == wordcraft_proof::IssueKind::Spelling { "spelling" } else { "grammar" }, "message": i.message, "suggestions": sugg})
+    let sugg = if i.kind == tabdocs_proof::IssueKind::Spelling { tabdocs_proof::suggest(&word, 6) } else { i.suggestions.clone() };
+    json!({"start": pos_json(a), "end": pos_json(b), "text": word, "kind": if i.kind == tabdocs_proof::IssueKind::Spelling { "spelling" } else { "grammar" }, "message": i.message, "suggestions": sugg})
 }
 
 /// F7: select the next issue after the caret and return it with suggestions.

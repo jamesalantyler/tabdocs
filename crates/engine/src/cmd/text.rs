@@ -1,9 +1,9 @@
 //! Typing and deleting.
 
 use serde_json::Value;
-use wordcraft_doc::para::{COLUMN_BREAK, NB_HYPHEN, NBSP, PAGE_BREAK, SOFT_HYPHEN};
-use wordcraft_doc::props::{Border, BorderStyle, NumRef};
-use wordcraft_doc::{Block, ListKind, Pos};
+use tabdocs_doc::para::{COLUMN_BREAK, NB_HYPHEN, NBSP, PAGE_BREAK, SOFT_HYPHEN};
+use tabdocs_doc::props::{Border, BorderStyle, NumRef};
+use tabdocs_doc::{Block, ListKind, Pos};
 
 use super::{delete_selection, sel_result, split_para, type_text};
 use crate::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
@@ -172,7 +172,7 @@ fn border_line_autoformat(s: &mut Session, at: &Pos) -> Result<bool, CmdError> {
         _ => return Ok(false),
     };
     let line = Border { style, width, color: None, space: 1.0 };
-    let set_bottom = |p: &mut wordcraft_doc::Paragraph| {
+    let set_bottom = |p: &mut tabdocs_doc::Paragraph| {
         let mut b = p.props.borders.unwrap_or_default();
         b.bottom = Some(line);
         p.props.borders = Some(b);
@@ -238,7 +238,7 @@ fn tab(s: &mut Session, _: &Value) -> CmdResult {
         }
         let mut path = tpath.0.clone();
         path.extend([nr as u32, nc as u32, 0]);
-        let start = Pos { story, path: wordcraft_doc::Path(path), off: 0 };
+        let start = Pos { story, path: tabdocs_doc::Path(path), off: 0 };
         // Select the cell's content like Word.
         let end_path = s.doc.para_paths(story).into_iter().rfind(|q| q.0.starts_with(&start.path.0[..start.path.0.len() - 1]));
         let end = end_path.map(|q| {
@@ -278,7 +278,7 @@ fn back_tab(s: &mut Session, _: &Value) -> CmdResult {
         };
         let mut path = tpath.0.clone();
         path.extend([nr as u32, nc as u32, 0]);
-        s.sel = Selection::caret(Pos { story, path: wordcraft_doc::Path(path), off: 0 });
+        s.sel = Selection::caret(Pos { story, path: tabdocs_doc::Path(path), off: 0 });
         return sel_result(s);
     }
     let f = s.sel.focus.clone();
@@ -401,7 +401,7 @@ fn delete(s: &mut Session, _: &Value) -> CmdResult {
                 *l -= 1;
             }
             path.extend([0, 0, 0]);
-            s.sel = Selection::caret(Pos { story: f.story, path: wordcraft_doc::Path(path), off: 0 });
+            s.sel = Selection::caret(Pos { story: f.story, path: tabdocs_doc::Path(path), off: 0 });
         }
     }
     sel_result(s)

@@ -1,28 +1,28 @@
 # MCP server
 
-WordCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
+TabDocs speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 Claude and other agents can write and edit documents.
 
 ```sh
-wordcraft-cli mcp                          # headless session (no window)
-wordcraft --control 7981 &                 # or: drive the running app…
-wordcraft-cli mcp --connect 127.0.0.1:7981 # …including clicks, keys and screenshots
+tabdocs-cli mcp                          # headless session (no window)
+tabdocs --control 7981 &                 # or: drive the running app…
+tabdocs-cli mcp --connect 127.0.0.1:7981 # …including clicks, keys and screenshots
 ```
 
-Claude Code: `claude mcp add wordcraft -- wordcraft-cli mcp`.
+Claude Code: `claude mcp add tabdocs -- tabdocs-cli mcp`.
 
 With `--connect`, the bridge sends the app's control key, which it reads from
-`WORDCRAFT_CONTROL_KEY` or from the key file the app writes at start. It sends the key only to
+`TABDOCS_CONTROL_KEY` or from the key file the app writes at start. It sends the key only to
 loopback addresses; see [Keys](control-protocol.md#keys).
 
 ## Tracked changes by an agent
 
-Tracked changes and comments are recorded under the session's user name ("WordCraft User" by
+Tracked changes and comments are recorded under the session's user name ("TabDocs User" by
 default). Name the agent so reviewers can tell its edits from people's: start the headless server
-with `wordcraft-cli mcp --author "Claude (copyedit)"`, or run
+with `tabdocs-cli mcp --author "Claude (copyedit)"`, or run
 `file.setAuthor {"name": "Claude (copyedit)"}`. Turn tracking on explicitly with
 `review.trackChanges {"value": true}`; without `value` it toggles, which turns tracking *off* in
-a document that was saved with it on. `wordcraft-cli run` takes `--author` too.
+a document that was saved with it on. `tabdocs-cli run` takes `--author` too.
 
 ## Tools
 
@@ -40,6 +40,6 @@ a document that was saved with it on. `wordcraft-cli run` takes `--author` too.
 | `parity` | feature coverage |
 | `screenshot`, `click`, `key`, `ui_inspect` | app only (`--connect`) |
 
-Resources: `wordcraft://document` (inspect) and `wordcraft://commands`.
+Resources: `tabdocs://document` (inspect) and `tabdocs://commands`.
 
 The acceptance test `crates/mcp/src/tests.rs` writes a formatted document using MCP only.

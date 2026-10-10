@@ -4,14 +4,14 @@
 
 use std::sync::Arc;
 
-use wordcraft_doc::numbering::{AbstractNum, Level, ListKind, Num, levels_for};
-use wordcraft_doc::para::{InlineObject, OBJ, PAGE_BREAK};
-use wordcraft_doc::props::{
+use tabdocs_doc::numbering::{AbstractNum, Level, ListKind, Num, levels_for};
+use tabdocs_doc::para::{InlineObject, OBJ, PAGE_BREAK};
+use tabdocs_doc::props::{
     Border, BorderStyle, Borders, CellProps, CharProps, NumRef, ParaProps, RowProps, TextColor, Underline, VMerge, VertAlign,
 };
-use wordcraft_doc::section::NumFormat;
-use wordcraft_doc::styles::{Style, StyleKind};
-use wordcraft_doc::{Align, Block, Blocks, Document, Paragraph, Rgb, Table, para_block};
+use tabdocs_doc::section::NumFormat;
+use tabdocs_doc::styles::{Style, StyleKind};
+use tabdocs_doc::{Align, Block, Blocks, Document, Paragraph, Rgb, Table, para_block};
 
 /// Font used for code spans and code blocks.
 pub const MONO_FONT: &str = "Courier New";
@@ -57,10 +57,7 @@ pub enum Inline {
     Image(Img),
     /// A bookmark (link target).
     Anchor(String),
-    /// A chart or diagram known here only by its alt text: written where alt text has a place
-    /// (an HTML or Markdown image), left out of editable formats so it never turns into body text.
-    Figure(String),
-    /// An equation in the linear format WordCraft keeps them in (`x=(-b±√(b^2-4ac))/2a`). Formats
+    /// An equation in the linear format TabDocs keeps them in (`x=(-b±√(b^2-4ac))/2a`). Formats
     /// without equations write `linear` as text.
     Equation {
         linear: String,
@@ -121,7 +118,7 @@ impl Para {
         for i in &self.inlines {
             match i {
                 Inline::Text(t, _) | Inline::Equation { linear: t, .. } => s.push_str(t),
-                Inline::Image(_) | Inline::Anchor(_) | Inline::Figure(_) => {}
+                Inline::Image(_) | Inline::Anchor(_) => {}
             }
         }
         s
@@ -371,7 +368,6 @@ impl Builder<'_> {
                     let e2 = out.len();
                     let _ = out.insert_object(e2, InlineObject::BookmarkEnd { name: name.clone() }, &CharProps::default());
                 }
-                Inline::Figure(_) => {}
                 Inline::Equation { linear, display } => {
                     let linear = clean_text(linear);
                     if !linear.is_empty() {
@@ -468,11 +464,11 @@ impl Builder<'_> {
     }
 
     fn table(&mut self, t: &FTable, depth: usize) -> Option<Table> {
-        let rows: Vec<&Vec<Cell>> = t.rows.iter().filter(|r| !r.is_empty()).take(wordcraft_doc::table::MAX_ROWS).collect();
+        let rows: Vec<&Vec<Cell>> = t.rows.iter().filter(|r| !r.is_empty()).take(tabdocs_doc::table::MAX_ROWS).collect();
         if rows.is_empty() {
             return None;
         }
-        let cols = t.cols().clamp(1, wordcraft_doc::table::MAX_COLS);
+        let cols = t.cols().clamp(1, tabdocs_doc::table::MAX_COLS);
         let width = self.doc.last_section.text_width().max(72.0);
         let mut tb = Table::new(rows.len(), cols, width);
         if t.borderless {
@@ -483,10 +479,10 @@ impl Builder<'_> {
         }
         tb.rows.clear();
         for r in rows {
-            let mut row = wordcraft_doc::Row { props: RowProps::default(), cells: Vec::new() };
+            let mut row = tabdocs_doc::Row { props: RowProps::default(), cells: Vec::new() };
             row.props.header = !r.is_empty() && r.iter().all(|c| c.header);
             let mut g = 0usize;
-            for c in r.iter().take(wordcraft_doc::table::MAX_COLS) {
+            for c in r.iter().take(tabdocs_doc::table::MAX_COLS) {
                 let span = (c.colspan.clamp(1, 63) as usize).min(cols.saturating_sub(g).max(1));
                 let w: f32 = tb.grid.get(g..(g + span).min(tb.grid.len())).map(|s| s.iter().sum()).unwrap_or(72.0);
                 g += span;
@@ -501,13 +497,13 @@ impl Builder<'_> {
                 } else {
                     VMerge::None
                 };
-                row.cells.push(wordcraft_doc::Cell {
+                row.cells.push(tabdocs_doc::Cell {
                     props: CellProps { width: Some(w), span: span as u32, vmerge, shading: c.shading, ..Default::default() },
                     blocks,
                 });
             }
             if row.cells.is_empty() {
-                row.cells.push(wordcraft_doc::Cell::empty());
+                row.cells.push(tabdocs_doc::Cell::empty());
             }
             tb.rows.push(row);
         }
@@ -692,21 +688,13 @@ pub fn flow_paras(doc: &Document, p: &Paragraph) -> Vec<Para> {
                         None => {}
                     }
                 }
-                Some(InlineObject::Graphic { alt, .. }) => {
-                    if !buf.is_empty() {
-                        out.push_text(&std::mem::take(&mut buf), &f);
-                    }
-                    if !alt.trim().is_empty() {
-                        out.inlines.push(Inline::Figure(alt.clone()));
-                    }
-                }
                 Some(InlineObject::Equation { linear, display, math }) => {
                     if !buf.is_empty() {
                         out.push_text(&std::mem::take(&mut buf), &f);
                     }
                     // The linear format is the shared form; an equation known only by its
                     // structure gets it from there.
-                    let linear = if linear.is_empty() { wordcraft_doc::math::to_linear(&math.nodes) } else { linear.clone() };
+                    let linear = if linear.is_empty() { tabdocs_doc::math::to_linear(&math.nodes) } else { linear.clone() };
                     out.inlines.push(Inline::Equation { linear, display: *display });
                 }
                 Some(InlineObject::BookmarkStart { name }) if name != "_GoBack" => {
@@ -955,8 +943,8 @@ impl ListCounter {
         }
         match li.level % 3 {
             0 => format!("{n}."),
-            1 => format!("{}.", wordcraft_doc::section::letters(n)),
-            _ => format!("{}.", wordcraft_doc::section::roman(n)),
+            1 => format!("{}.", tabdocs_doc::section::letters(n)),
+            _ => format!("{}.", tabdocs_doc::section::roman(n)),
         }
     }
 }

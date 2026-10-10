@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Rect, Stroke, Visuals};
 
-/// WordCraft's app colour (and its darker ink for text on light backgrounds).
+/// TabDocs's app colour (and its darker ink for text on light backgrounds).
 pub const APP_COLOR: Color32 = Color32::from_rgb(0x3B, 0x5B, 0xDB);
 pub const APP_INK: Color32 = Color32::from_rgb(0x2B, 0x47, 0xB5);
 
@@ -99,8 +99,6 @@ pub struct Tokens {
     pub ruler_tick: Color32,
     pub status_bar: Color32,
     pub selection: Color32,
-    /// Find › Reading Highlight.
-    pub find_highlight: Color32,
     pub caret: Color32,
     pub page_shadow: Color32,
     /// Selection-frame handles (pictures, shapes, text boxes) and their shadow.
@@ -142,7 +140,6 @@ impl Tokens {
             ruler_tick: Color32::from_rgb(0x70, 0x70, 0x70),
             status_bar: Color32::from_rgb(0xF0, 0xF0, 0xF0),
             selection: Color32::from_rgba_unmultiplied(0x3B, 0x5B, 0xDB, 0x48),
-            find_highlight: Color32::from_rgba_unmultiplied(0xFF, 0xE0, 0x3D, 0x90),
             caret: Color32::BLACK,
             page_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x22),
             handle: Color32::WHITE,
@@ -182,7 +179,6 @@ impl Tokens {
             ruler_tick: Color32::from_rgb(0xA0, 0xA0, 0xA0),
             status_bar: Color32::from_rgb(0x1F, 0x1F, 0x1F),
             selection: Color32::from_rgba_unmultiplied(0x7A, 0x93, 0xF0, 0x55),
-            find_highlight: Color32::from_rgba_unmultiplied(0xC8, 0xA8, 0x00, 0x70),
             caret: Color32::BLACK,
             page_shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 0x60),
             handle: Color32::from_rgb(0xF2, 0xF2, 0xF2),
@@ -208,19 +204,11 @@ pub fn install_fonts(ctx: &egui::Context) {
 /// [`install_fonts`] with the CJK fallback order for the interface language: the Chinese face
 /// first for Chinese (#8), the Japanese one otherwise. The new fonts apply from the next frame.
 pub fn install_fonts_for(ctx: &egui::Context, prefer_hans: bool) {
-    install_fonts_with(ctx, prefer_hans, false);
+    ctx.set_fonts(font_definitions(prefer_hans));
 }
 
-/// [`install_fonts_for`], also adding an installed CJK font when `system_cjk` is set and no
-/// embedded face covers the need (#241). Reading that font is a large file read, so callers ask
-/// for it only when CJK text is on screen: a CJK interface language, or the language names in
-/// Options.
-pub fn install_fonts_with(ctx: &egui::Context, prefer_hans: bool, system_cjk: bool) {
-    ctx.set_fonts(font_definitions(prefer_hans, system_cjk));
-}
-
-/// The interface fonts; see [`install_fonts_with`].
-pub fn font_definitions(prefer_hans: bool, system_cjk: bool) -> FontDefinitions {
+/// The interface fonts; see [`install_fonts_for`].
+pub fn font_definitions(prefer_hans: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
@@ -239,42 +227,18 @@ pub fn font_definitions(prefer_hans: bool, system_cjk: bool) -> FontDefinitions 
     }
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["InterMedium".into(), "Inter".into(), "SourceSans".into()]);
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["InterSemiBold".into(), "Inter".into(), "SourceSans".into()]);
-    let add_cjk = |fonts: &mut FontDefinitions, name: String, data: FontData| {
-        fonts.font_data.insert(name.clone(), Arc::new(data));
+    for f in tabdocs_fonts::ui_cjk_fonts(prefer_hans) {
+        // The same static bytes the document fonts use: one copy in the binary.
+        let name = format!("{} {}", f.family, f.style);
+        fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
         for fam in [FontFamily::Proportional, FontFamily::Name("medium".into()), FontFamily::Name("semibold".into())] {
             if let Some(v) = fonts.families.get_mut(&fam) {
                 v.push(name.clone());
             }
         }
-    };
-    let cjk = wordcraft_fonts::ui_cjk_fonts(prefer_hans);
-    for f in &cjk {
-        // The same static bytes the document fonts use: one copy in the binary.
-        add_cjk(&mut fonts, format!("{} {}", f.family, f.style), FontData::from_static(f.bytes));
     }
-    // No embedded face covers the interface language (a build without craft-fonts, or without
-    // its Chinese face, #241): an installed CJK font, so the menus don't show boxes.
-    #[cfg(not(target_arch = "wasm32"))]
-    if system_cjk
-        && wordcraft_fonts::ui_needs_system_cjk(prefer_hans, &cjk)
-        && let Some(f) = system_cjk_font(prefer_hans)
-    {
-        let mut data = FontData::from_static(&f.bytes);
-        data.index = f.index;
-        add_cjk(&mut fonts, format!("system {}", f.family), data);
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = system_cjk;
     // Symbols and emoji fall back to egui's defaults (kept in the families).
     fonts
-}
-
-/// The installed CJK interface font for a Chinese (`hans`) or other interface, read once.
-#[cfg(not(target_arch = "wasm32"))]
-fn system_cjk_font(hans: bool) -> Option<&'static wordcraft_fonts::SystemUiFont> {
-    static ZH: std::sync::OnceLock<Option<wordcraft_fonts::SystemUiFont>> = std::sync::OnceLock::new();
-    static OTHER: std::sync::OnceLock<Option<wordcraft_fonts::SystemUiFont>> = std::sync::OnceLock::new();
-    (if hans { &ZH } else { &OTHER }).get_or_init(|| wordcraft_fonts::system_cjk_ui_font(hans)).as_ref()
 }
 
 pub fn medium(size: f32) -> FontId {
@@ -415,56 +379,6 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     });
 }
 
-pub fn c32(c: wordcraft_doc::Rgb) -> Color32 {
+pub fn c32(c: tabdocs_doc::Rgb) -> Color32 {
     Color32::from_rgb(c.0, c.1, c.2)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-
-    /// Symbols written as text in the interface code must exist in the interface fonts (Inter and
-    /// egui's emoji fallbacks); a missing glyph draws as an empty box, as the panes' "✕" close
-    /// button once did. Letters are the catalogs' business (see the i18n font tests).
-    #[test]
-    fn interface_symbols_have_glyphs() {
-        let ctx = egui::Context::default();
-        ctx.set_fonts(super::font_definitions(false, false));
-        ctx.run_ui(egui::RawInput::default(), |_| {}).drop_without_applying_deltas();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut symbols = BTreeSet::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let code = std::fs::read_to_string(&path).unwrap();
-            // Characters inside string literals, line by line (good enough for this code base).
-            for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                for (i, part) in line.split('"').enumerate() {
-                    if i % 2 == 1 {
-                        symbols.extend(
-                            part.chars()
-                                .filter(|c| !c.is_ascii() && !c.is_alphabetic() && !c.is_whitespace())
-                                .map(|c| (c, path.file_name().unwrap().to_string_lossy().to_string())),
-                        );
-                    }
-                }
-            }
-        }
-        // Equation gallery templates are UnicodeMath input (`lim┬(n→∞)`, `≜`) that the math
-        // renderer draws with document fonts, not interface text.
-        // The ➢ bullet is a value for `para.bullets`; its menu tile draws the shape instead.
-        let exempt = |c: char, file: &str| match file {
-            "equation_tab.rs" => matches!(c, '≜' | '┬'),
-            "ribbon.rs" => c == '➢',
-            _ => false,
-        };
-        symbols.retain(|(c, file)| !exempt(*c, file));
-        let font = super::regular(12.5);
-        let missing: Vec<String> = ctx.fonts_mut(|f| {
-            symbols.iter().filter(|(c, _)| !f.has_glyph(&font, *c)).map(|(c, file)| format!("{c} U+{:04X} in {file}", *c as u32)).collect()
-        });
-        assert!(missing.is_empty(), "symbols without a glyph: {missing:#?}");
-    }
 }

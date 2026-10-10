@@ -1,8 +1,8 @@
 //! File format dispatch by extension. Format crates plug in here.
 
-use wordcraft_doc::Document;
+use tabdocs_doc::Document;
 
-/// Formats WordCraft opens.
+/// Formats TabDocs opens.
 pub const OPEN_EXTS: &[&str] = &[
     "docx",
     "docm",
@@ -23,7 +23,7 @@ pub const OPEN_EXTS: &[&str] = &[
     "wcraft.json",
     "json",
 ];
-/// Formats WordCraft saves (Save As).
+/// Formats TabDocs saves (Save As).
 pub const SAVE_EXTS: &[&str] = &["docx", "docm", "dotx", "dotm", "pdf", "txt", "md", "html", "rtf", "odt", "tex", "png", "json"];
 
 fn ext_of(name: &str) -> String {
@@ -33,7 +33,7 @@ fn ext_of(name: &str) -> String {
 
 /// Is `ext` one of Word's package formats (.docx/.docm/.dotx/.dotm), which save without loss?
 pub fn is_word_package(ext: &str) -> bool {
-    wordcraft_docx::Flavor::from_ext(ext).is_some()
+    tabdocs_docx::Flavor::from_ext(ext).is_some()
 }
 
 /// Parse a document from bytes; `name` gives the format by extension.
@@ -55,7 +55,7 @@ pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<Document, String> {
 pub fn save_bytes(name: &str, doc: &Document) -> Result<Vec<u8>, String> {
     let ext = ext_of(name);
     match ext.as_str() {
-        "txt" | "text" => Ok(doc.plain_text(wordcraft_doc::StoryRef::Body).replace('\n', "\r\n").into_bytes()),
+        "txt" | "text" => Ok(doc.plain_text(tabdocs_doc::StoryRef::Body).replace('\n', "\r\n").into_bytes()),
         "json" => serde_json::to_vec_pretty(doc).map_err(|e| e.to_string()),
         other => match crate::io_ext::save(other, doc) {
             Some(r) => r,
@@ -75,7 +75,7 @@ pub fn open_path(path: &std::path::Path) -> Result<Document, String> {
     if matches!(ext_of(&name).as_str(), "html" | "htm" | "xhtml") {
         // Pictures referenced by a relative path load from beside the HTML file.
         let images = LocalImages::new(path.parent().unwrap_or(std::path::Path::new("")));
-        let mut doc = wordcraft_formats::html::import_with(&wordcraft_formats::html::decode(&bytes), &|src| images.load(src));
+        let mut doc = tabdocs_formats::html::import_with(&tabdocs_formats::html::decode(&bytes), &|src| images.load(src));
         doc.ensure_nonempty();
         return Ok(doc);
     }
@@ -153,7 +153,7 @@ impl LocalImages {
         if src.is_empty() || src.starts_with("//") || src.split_once(':').is_some_and(|(scheme, _)| !scheme.contains('/')) {
             return None;
         }
-        let rel = String::from_utf8(wordcraft_formats::model::percent_decode(src)).ok()?;
+        let rel = String::from_utf8(tabdocs_formats::model::percent_decode(src)).ok()?;
         let rel = std::path::Path::new(&rel);
         if rel.components().any(|c| matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir)) {
             return None;

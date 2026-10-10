@@ -1,9 +1,9 @@
 //! The Equation tab's galleries: structure templates (fractions, scripts, radicals, integrals,
 //! large operators, brackets, functions, accents, limits and logs, operators, matrices), symbol
 //! sets and ready-made equations. Every template is linear-format text (`⬚` = empty slot) that
-//! [`wordcraft_doc::math::parse_linear`] builds into structures.
+//! [`tabdocs_doc::math::parse_linear`] builds into structures.
 
-use wordcraft_doc::math::{Arg, LimLoc, parse_linear};
+use tabdocs_doc::math::{Arg, LimLoc, parse_linear};
 
 /// One template.
 #[derive(Clone, Copy, Debug)]
@@ -31,7 +31,7 @@ impl Template {
     pub fn nodes(&self) -> Arg {
         let mut n = parse_linear(self.linear);
         if self.limits.is_some() {
-            wordcraft_doc::math_edit::set_limits(&mut n, self.limits);
+            tabdocs_doc::math_edit::set_limits(&mut n, self.limits);
         }
         n
     }
@@ -537,13 +537,13 @@ pub const BUILT_INS: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wordcraft_doc::math::{MNode, to_linear};
+    use tabdocs_doc::math::{MNode, to_linear};
 
     fn has_leftover(a: &[MNode]) -> bool {
         a.iter().any(|n| match n {
             MNode::Run(r) => r.text.contains('⬚') || r.text.contains('▒') || r.text.contains('┬') || r.text.contains('┴'),
             other => {
-                (0..wordcraft_doc::math_edit::child_count(other)).any(|c| wordcraft_doc::math_edit::child(other, c).is_some_and(|x| has_leftover(x)))
+                (0..tabdocs_doc::math_edit::child_count(other)).any(|c| tabdocs_doc::math_edit::child(other, c).is_some_and(|x| has_leftover(x)))
             }
         })
     }

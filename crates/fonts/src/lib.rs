@@ -1,15 +1,14 @@
-//! WordCraft fonts: the font database (bundled OFL families + user/system fonts), vertical
+//! TabDocs fonts: the font database (bundled OFL families + user/system fonts), vertical
 //! metrics, glyph outlines and OpenType shaping.
 //!
 //! Shaping here is style-agnostic: [`shape`] turns a string in one face into glyph ids, clusters
-//! and advances in font units. `wordcraft-compose` applies sizes, tracking, scaling and
+//! and advances in font units. `tabdocs-compose` applies sizes, tracking, scaling and
 //! justification on top.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
 mod fontdb;
 pub mod math;
-mod ui_fallback;
 pub mod word;
 
 pub use fontdb::{FALLBACK_FAMILY, FaceRef, FontDb, FontFace, base_style, bundled, system_font_dirs};
@@ -18,7 +17,6 @@ use harfrust::{Direction, ShapeOptions, Tag, UnicodeBuffer};
 pub use kurbo::BezPath;
 use skrifa::MetadataProvider;
 use skrifa::instance::Size;
-pub use ui_fallback::{SystemUiFont, system_cjk_ui_font, ui_needs_system_cjk};
 
 /// A font from the optional craft-fonts build input (https://github.com/storytold/craft-fonts;
 /// empty unless built with `CRAFT_FONTS_DIR`, see `build.rs`).

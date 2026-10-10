@@ -3,9 +3,8 @@ Copyright (c) 2026 ArtCraft Team and the WordCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCraft Team. They are
-not open source and are not covered by the license above; their terms are in
-docs/brand/LICENSE-brand.txt.
+The original upstream logos and trademarks are not included in this fork.
+TabDocs is an independent modified distribution and is not endorsed by the original developers.
 
 Third-party material
 
@@ -29,3 +28,6 @@ Rust dependencies (egui, eframe, vello_cpu, skrifa, harfrust, krilla, quick-xml,
 are permissively licensed (MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
 
 No Microsoft, Adobe, Avid or Autodesk icons, images, templates or artwork are included.
+
+TabDocs modification: multi-document tabs, session restoration, tab controls,
+and independent product naming and icon. Original upstream copyright retained above.
